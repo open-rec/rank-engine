@@ -2,6 +2,7 @@ import json
 
 import torch
 from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.responses import FileResponse
 from starlette.middleware.base import _StreamingResponse
 from torch import nn
 
@@ -11,6 +12,19 @@ from proto import Model, UserItems, ReResponse
 
 app = FastAPI()
 model: nn.Module = None
+
+HEALTH_PATH = "/health"
+CLEAN_PATH = "/clean"
+MODEL_PATH = "/model"
+MODEL_LOAD_PATH = MODEL_PATH + "/load"
+MODEL_SCORE_PATH = MODEL_PATH + "/score"
+
+PROXY_PATH_SET = {
+    HEALTH_PATH,
+    CLEAN_PATH,
+    MODEL_LOAD_PATH,
+    MODEL_SCORE_PATH,
+}
 
 
 @app.exception_handler(HTTPException)
@@ -24,6 +38,10 @@ async def exception_handler(request, exception: ReException):
 @app.middleware("http")
 async def response_format(request: Request, call_next):
     response = await call_next(request)
+
+    if request.url.path not in PROXY_PATH_SET:
+        return response
+
     if type(response) is ReResponse:
         return Response(content=response.to_json())
     elif type(response) is _StreamingResponse:
@@ -50,7 +68,7 @@ async def response_format(request: Request, call_next):
 
 @app.get("/")
 def index():
-    return "rank engine works"
+    return FileResponse("index.html")
 
 
 @app.get("/health")
@@ -79,7 +97,7 @@ def clean():
     torch.cuda.empty_cache()
 
 
-@app.post("/score")
+@app.post("/model/score")
 def score(user_items: UserItems):
     if not model:
         raise ReException(ErrorCode.MODEL_NOT_LOAD_YET)
@@ -102,7 +120,7 @@ def score(user_items: UserItems):
             score = model(torch.stack(batch_features))
             return score.squeeze().tolist()
     except Exception as e:
-        raise(ReException(ErrorCode.INFERENCE_FAILED))
+        raise (ReException(ErrorCode.INFERENCE_FAILED))
 
 
 if __name__ == "__main__":
