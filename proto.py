@@ -1,5 +1,6 @@
+import json
+
 from pydantic import BaseModel, Field
-from typing import Any, Optional
 
 
 class Model(BaseModel):
@@ -13,8 +14,20 @@ class UserItems(BaseModel):
     item_ids: list = Field(default=[], description="user score items")
 
 
-class ReResponse(BaseModel):
-    code: int = Field(default=0)
-    status: str = Field(default="success")
-    data: Any = Field(default=None, description="data returned by api")
-    message: str = Field(default="")
+class ReResponse:
+
+    def __init__(self, code=0, status="success", data=None, message=""):
+        self.code = code
+        self.status = status
+        self.data = data
+        self.message = message
+
+    def to_dict(self):
+        return self.__dict__
+
+    def to_json(self):
+        return json.dumps(self.to_dict())
+
+
+if __name__ == "__main__":
+    print(type(ReResponse().to_json()))

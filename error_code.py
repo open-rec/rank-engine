@@ -1,25 +1,30 @@
+from enum import Enum
+
 from fastapi import HTTPException
 
 
-class ErrorCode:
+class ErrorCode(Enum):
+    SUCCESS = 0
+    UNKNOWN_ERROR = 1000
+    INVALID_MODEL = 1001
+    MODEL_NOT_LOAD_YET = 1002
+    LOAD_MODEL_FAILED = 1003
+    MODEL_NOT_FOUND = 1004
+    INFERENCE_FAILED = 1005
 
-    SUCCESS = (0, "success")
-    UNKNOWN_ERROR = (1000, "unknown error")
-    INVALID_MODEL = (1001, "invalid model")
-    MODEL_NOT_LOAD_YET = (1002, "model not load yet")
+    def __init__(self, code=0):
+        self._code = code
 
-    map = {}
+    @property
+    def code(self):
+        return self._code
 
-    @classmethod
-    def message(cls, code):
-        if not cls.map:
-            cls.map = {v[0]: v[1] for k, v in cls.__dict__.items() if k.isupper()}
-        return cls.map.get(code, 1000)
+    @property
+    def message(self):
+        return self.name
 
 
 class ReException(HTTPException):
 
-    def __init__(self, code: int = 0):
-        code, msg = code, ErrorCode.message(code)
-        super().__init__(status_code=code, detail=msg)
-        self.error_code = code
+    def __init__(self, error_code: ErrorCode):
+        super().__init__(status_code=error_code.code, detail=error_code.message)
