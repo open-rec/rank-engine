@@ -9,6 +9,7 @@ from torch import nn
 from error_code import ReException, ErrorCode
 from model import model_func_map
 from proto import Model, UserItems, ReResponse
+from service.feature_service import FeatureService
 
 app = FastAPI()
 model: nn.Module = None
@@ -25,6 +26,10 @@ PROXY_PATH_SET = {
     MODEL_LOAD_PATH,
     MODEL_SCORE_PATH,
 }
+
+FEATURE_DIM = 421
+
+feature_service = FeatureService()
 
 
 @app.exception_handler(HTTPException)
@@ -101,21 +106,18 @@ def clean():
 def score(user_items: UserItems):
     if not model:
         raise ReException(ErrorCode.MODEL_NOT_LOAD_YET)
-
     try:
         with torch.no_grad():
-            # todo, get user feature from redis or es
-            user_features = None
+            user_features = feature_service.get_user_feature_by_id(user_items.user_id)
             batch_features = []
             for item_id in user_items.item_ids:
-                # todo, get item feature from redis or es
-                item_features = None
+                item_features = feature_service.get_item_feature_by_id(item_id)
                 batch_features.append(torch.cat(
                     (
                         torch.tensor(user_features, dtype=torch.float32),
                         torch.tensor(item_features, dtype=torch.float32)
                     ),
-                    dim=0
+                    dim=FEATURE_DIM
                 ))
             score = model(torch.stack(batch_features))
             return score.squeeze().tolist()
