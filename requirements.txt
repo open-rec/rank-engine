@@ -1,2 +1,7 @@
 fastapi==0.111.0
 torch==2.2.2
+fastapi==0.111.0
+fastapi-cli==0.0.4
+starlette==0.37.2
+redis==5.0.7
+
