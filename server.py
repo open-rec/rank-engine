@@ -1,16 +1,17 @@
 import json
 
+import numpy as np
 import torch
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse
 from starlette.middleware.base import _StreamingResponse
 from torch import nn
 
+from config import Config
 from error_code import ReException, ErrorCode
 from model import model_func_map
 from proto import Model, UserItems, ReResponse
 from service.feature_service import FeatureService
-from config import Config
 
 app = FastAPI()
 model: nn.Module = None
@@ -112,10 +113,17 @@ def score(user_items: UserItems):
         with torch.no_grad():
             user_features = feature_service.get_user_feature_by_id(user_items.user_id)
             batch_features = []
+            item_score_map = {}
+            hit_items = []
             for item_id in user_items.item_ids:
                 item_features = feature_service.get_item_feature_by_id(item_id)
                 if item_features is None:
+                    item_score_map[item_id] = 0.0
                     continue
+
+                if user_features is None:
+                    user_features = np.zeros(model.dim - item_features.size)
+
                 batch_features.append(torch.cat(
                     (
                         torch.tensor(user_features, dtype=torch.float32),
@@ -123,9 +131,15 @@ def score(user_items: UserItems):
                     ),
                     dim=0
                 ))
+                hit_items.append(item_id)
             with torch.no_grad():
                 score = model(torch.stack(batch_features))
-            return score.squeeze().tolist()
+
+            hit_item_scores = score.squeeze().tolist()
+            for h_item_id, h_item_score in zip(hit_items, hit_item_scores):
+                item_score_map[h_item_id] = h_item_score
+
+            return item_score_map
     except Exception as e:
         raise (ReException(ErrorCode.INFERENCE_FAILED))
 

@@ -1,4 +1,3 @@
-
 class RedisConfig(object):
     HOST = "localhost"
     PORT = 6379
@@ -13,5 +12,3 @@ class ServerConfig(object):
 class Config(object):
     REDIS = RedisConfig
     SERVER = ServerConfig
-
-

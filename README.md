@@ -17,5 +17,5 @@ Access http://127.0.0.1:8000/docs#/ to get more information.
 
 eg:  
 Type: LR  
-Dimension: 421  
+Dimension: 63
 Path: rank-engine/model/lr.pth
