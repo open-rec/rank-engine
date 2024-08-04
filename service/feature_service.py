@@ -1,3 +1,4 @@
+import json
 import logging
 
 import numpy as np
@@ -22,17 +23,17 @@ class FeatureService(object):
         item_feature = self.load_item_feature()
 
         user_features = np.hstack([
-            self.user_feature.country,
-            self.user_feature.city,
-            self.user_feature.gender,
-            self.user_feature.age,
-            self.user_feature.tags,
+            user_feature.country,
+            user_feature.city,
+            user_feature.gender,
+            user_feature.age,
+            user_feature.tags
         ])
 
         item_features = np.hstack([
-            self.item_feature.category,
-            self.item_feature.scene,
-            self.item_feature.weight,
+            item_feature.category,
+            item_feature.scene,
+            item_feature.weight,
         ])
 
         self.user_feature_map = {
@@ -45,33 +46,44 @@ class FeatureService(object):
             for i, item_id in enumerate(item_feature.raw_id)
         }
 
-    def load_user_feature(self):
+    @staticmethod
+    def _batch_load(key_pattern="*", batch_size=500):
         redis_client = get_redis_client()
-        user_data = {}
-        for key in redis_client.keys("user:*"):
-            try:
-                key = key.decode("utf-8")
-                value = redis_client.get_value(key).decode("utf-8", errors='ignore')
-                user_data[key] = value
-            except Exception as e:
-                logging.warn(f"load user feature key:{key} failed, {e}")
-                continue
+        keys = redis_client.keys(key_pattern)
+        length = len(keys)
+        tick = 0
+        key_values = {}
+        batch_keys = []
 
+        def update_key_values(batch_keys=[]):
+            values = redis_client.batch_get_values(batch_keys)
+            for key, value in zip(batch_keys, values):
+                try:
+                    key_values[key] = json.loads(value.decode("utf-8"))
+                except Exception as e:
+                    logging.warn(f"load key:{key}, value:{value} failed")
+                    continue
+            batch_keys.clear()
+
+        while tick < length:
+            batch_keys.append(keys[tick].decode("utf-8"))
+            tick += 1
+            if tick % batch_size == 0:
+                update_key_values(batch_keys=batch_keys)
+        if batch_keys:
+            update_key_values(batch_keys=batch_keys)
+
+        filter_values = {key: value for key, value in key_values.items() if value}
+        return {i: value for i, value in enumerate(filter_values.values())}
+
+    def load_user_feature(self):
+        user_data = self._batch_load("user:*", batch_size=500)
         users = pd.DataFrame.from_dict(user_data, orient="index")
         user_feature = UserFeature(users=users)
         return user_feature
 
     def load_item_feature(self, ):
-        redis_client = get_redis_client()
-        item_data = {}
-        for key in redis_client.keys("user:*"):
-            try:
-                key = key.decode("utf-8")
-                value = redis_client.get_value(key).decode("utf-8", errors='ignore')
-                item_data[key] = value
-            except Exception as e:
-                logging.warn(f"load item feature key:{key} failed, {e}")
-                continue
+        item_data = self._batch_load("item:*", batch_size=500)
         items = pd.DataFrame.from_dict(item_data, orient="index")
         item_feature = ItemFeature(items=items)
         return item_feature

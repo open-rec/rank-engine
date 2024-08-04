@@ -2,6 +2,8 @@ import logging
 
 import redis
 
+from config import Config
+
 common_redis_client = None
 
 
@@ -24,6 +26,15 @@ class RedisClient(object):
     def mget_values(self, keys=[]):
         return self.client.mget(keys)
 
+    def batch_get_values(self, keys=[], ):
+        pipeline = self.client.pipeline()
+        for key in keys:
+            pipeline.get(key)
+        return pipeline.execute()
+
+    def delete_keys(self, keys):
+        self.client.delete(keys)
+
     def keys(self, pattern="*"):
         return self.client.keys(pattern)
 
@@ -31,5 +42,5 @@ class RedisClient(object):
 def get_redis_client():
     global common_redis_client
     if not common_redis_client:
-        common_redis_client = RedisClient(host="localhost", port=6379, db=0)
+        common_redis_client = RedisClient(host=Config.REDIS.HOST, port=Config.REDIS.PORT, db=Config.REDIS.DB)
     return common_redis_client

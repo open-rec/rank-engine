@@ -10,6 +10,7 @@ from error_code import ReException, ErrorCode
 from model import model_func_map
 from proto import Model, UserItems, ReResponse
 from service.feature_service import FeatureService
+from config import Config
 
 app = FastAPI()
 model: nn.Module = None
@@ -91,6 +92,7 @@ async def load_model(model_info: Model):
     model = model_func_map[model_type](model_info.dim)
     try:
         model.load_state_dict(torch.load(model_info.model))
+        model.eval()
     except FileNotFoundError as fnfe:
         raise ReException(ErrorCode.MODEL_NOT_FOUND)
     except Exception as e:
@@ -112,14 +114,17 @@ def score(user_items: UserItems):
             batch_features = []
             for item_id in user_items.item_ids:
                 item_features = feature_service.get_item_feature_by_id(item_id)
+                if item_features is None:
+                    continue
                 batch_features.append(torch.cat(
                     (
                         torch.tensor(user_features, dtype=torch.float32),
                         torch.tensor(item_features, dtype=torch.float32)
                     ),
-                    dim=FEATURE_DIM
+                    dim=0
                 ))
-            score = model(torch.stack(batch_features))
+            with torch.no_grad():
+                score = model(torch.stack(batch_features))
             return score.squeeze().tolist()
     except Exception as e:
         raise (ReException(ErrorCode.INFERENCE_FAILED))
@@ -128,4 +133,4 @@ def score(user_items: UserItems):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=Config.SERVER.HOST, port=Config.SERVER.PORT)
