@@ -30,3 +30,4 @@ model/*.pth
 
 # tmp files
 __pycache__/*
+*.pyc
