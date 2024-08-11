@@ -1,9 +1,13 @@
+import os
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = 'True'
+
 import json
 
 import numpy as np
 import torch
-from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.base import _StreamingResponse
 from torch import nn
 
@@ -50,7 +54,7 @@ async def response_format(request: Request, call_next):
         return response
 
     if type(response) is ReResponse:
-        return Response(content=response.to_json())
+        return JSONResponse(content=response.to_dict())
     elif type(response) is _StreamingResponse:
         if response.status_code >= ErrorCode.UNKNOWN_ERROR.code:
             response.status_code = 200
@@ -68,9 +72,9 @@ async def response_format(request: Request, call_next):
             content = json.loads(content)
         except json.JSONDecodeError:
             content = eval(content)
-        return Response(content=ReResponse(code=0, status="success", data=content).to_json())
+        return JSONResponse(content=ReResponse(code=0, status="success", data=content).to_dict())
     else:
-        return Response(content=response.body())
+        return JSONResponse(content=response.body())
 
 
 @app.get("/")
