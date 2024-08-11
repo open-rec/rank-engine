@@ -40,8 +40,8 @@ feature_service = FeatureService()
 
 @app.exception_handler(HTTPException)
 async def exception_handler(request, exception: ReException):
-    return Response(
-        content=ReResponse(code=exception.status_code, status="fail", data=None, message=exception.detail).to_json(),
+    return JSONResponse(
+        content=ReResponse(code=exception.status_code, status="fail", data=None, message=exception.detail).to_dict(),
         status_code=exception.status_code
     )
 
@@ -106,6 +106,9 @@ async def load_model(model_info: Model):
 
 @app.post("/clean")
 def clean():
+    global model
+    if model:
+        model = None
     torch.cuda.empty_cache()
 
 

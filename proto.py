@@ -27,7 +27,3 @@ class ReResponse:
 
     def to_json(self):
         return json.dumps(self.to_dict())
-
-
-if __name__ == "__main__":
-    print(type(ReResponse().to_json()))
