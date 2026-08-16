@@ -1,27 +1,94 @@
 # rank-engine
 
-Online recommend rank service
+Online ranking service for open-rec. `rec-server`'s `rank` DAG node POSTs a user plus a candidate
+item list here and gets a score per item back, which it adds to the recall scores.
+
+FastAPI + PyTorch, listening on port 8000.
+
+## how it fits in
+
+```
+rec-server ──POST /model/score──> rank-engine ──> LRModel (from rec-algorithm)
+                                       │
+                                       └──reads user:* / item:* features──> Redis
+```
+
+Ranking is optional. If this service is down, `rec-server` logs
+`rank score failed with exception` and returns the recall order unranked — the request still
+succeeds, so check the logs rather than assuming ranking is live.
+
+## install
+
+`requirements.txt` pins `rec-algorithm==0.0.1`; the model class (`LRModel`) and the feature encoders
+come from that package, so build its wheel first:
+
+```shell
+git clone https://github.com/open-rec/rec-algorithm.git
+cd rec-algorithm
+pip install -r requirements.txt
+bash package.sh
+pip install dist/rec_algorithm-0.0.1-*.whl
+```
+
+```shell
+cd rank-engine
+pip install -r requirements.txt
+```
 
 ## start
 
 ```shell
-bash start.sh
+bash start.sh            # uvicorn server:app --reload
 ```
+
+Host and port come from `config.py` (`ServerConfig`), Redis from `RedisConfig` — both default to
+localhost. Interactive docs: http://127.0.0.1:8000/docs
+
+**Redis must be populated before startup.** `FeatureService` is a singleton that runs at import time:
+it scans every `user:*` and `item:*` key, builds one-hot / scaled features with `rec-algorithm`'s
+`UserFeature` and `ItemFeature`, and caches them in memory. Starting against an empty Redis yields
+empty feature maps, and new data pushed later is not picked up until restart.
 
 ## api
 
-Access http://127.0.0.1:8000/docs#/ to get more information.  
-eg:  
-score   
-http://127.0.0.1:8000/model/score
-request
-```json
-{
-    "user_id": "test",
-    "item_ids":["5105858","3785327","123"]
-}
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | liveness |
+| POST | `/model/load` | load a checkpoint into memory |
+| POST | `/model/score` | score items for a user |
+| POST | `/clean` | drop the loaded model and free CUDA cache |
+| GET | `/` | static `index.html` |
+
+### load a model first
+
+`/model/score` returns `MODEL_NOT_LOAD_YET` until a checkpoint is loaded — this is the step most
+easily missed:
+
+```shell
+curl -X POST http://127.0.0.1:8000/model/load \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "lr", "model": "model/lr.pth", "dim": 63}'
 ```
-response
+
+| Field | Default | Meaning |
+|---|---|---|
+| `type` | `lr` | key into `model_func_map`; only `lr` is implemented |
+| `model` | `lr.pth` | path to the `state_dict`, relative to the working directory |
+| `dim` | `1024` | input feature width — **must** match what the checkpoint was trained with |
+
+`dim` is not cosmetic: it constructs `LRModel(dim)` before `load_state_dict`, so a mismatch fails to
+load. The correct value depends on the one-hot cardinality of the data in Redis, which changes with
+the dataset — the pre-trained Douban checkpoint in
+[model](https://github.com/open-rec/model) is 63.
+
+### score
+
+```shell
+curl -X POST http://127.0.0.1:8000/model/score \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id": "test", "item_ids": ["5105858", "3785327", "123"]}'
+```
+
 ```json
 {
     "code": 0,
@@ -35,9 +102,37 @@ response
 }
 ```
 
-## Model
-only support LR now.  
-eg:  
-Type: LR  
-Dimension: 63  
-Path: rank-engine/model/lr.pth
+Items with no cached features score `0.0` rather than being dropped (`123` above). An unknown
+`user_id` falls back to a zero user-feature vector, so the response is still well-formed.
+
+## models
+
+Only LR is implemented. `model_func_map` in `model.py` maps a `type` string to a class from
+`rec-algorithm`:
+
+```python
+model_func_map = {
+    "lr": LRModel,
+}
+```
+
+To add one, implement it in `rec-algorithm` (`algorithm/rank/`) and register it here.
+
+Train a checkpoint with `rec-algorithm`, or download the Douban one:
+
+| Source | Type | Dim | Path |
+|---|---|---|---|
+| [model](https://github.com/open-rec/model) | LR | 63 | `rank/lr.pth` |
+| `rec-algorithm` `test_lr.py::test_train` | LR | depends on the dataset | `rec-algorithm/model/lr.pth` |
+
+## configuration
+
+`config.py`, edited in place — there is no env-var override:
+
+```python
+class RedisConfig:  HOST = "localhost"; PORT = 6379; DB = 0
+class ServerConfig: HOST = "0.0.0.0";   PORT = 8000
+```
+
+`rec-server` reaches this service via `rank.host` / `rank.port` in its
+`application-{dev,prod}.properties`, defaulting to `127.0.0.1:8000`.
