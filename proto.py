@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -7,6 +8,7 @@ class Model(BaseModel):
     model: str = Field(default="lr.pth")
     dim: int = Field(default=1024)
     type: str = Field(default="lr")
+    feature: Optional[str] = Field(default=None, description="optional FeatureSpace JSON sidecar")
 
 
 class UserItems(BaseModel):

@@ -16,6 +16,7 @@ from error_code import ReException, ErrorCode
 from model import model_func_map
 from proto import Model, UserItems, ReResponse
 from service.feature_service import FeatureService
+from algorithm.utils.file_util import resolve_feature_file
 
 app = FastAPI()
 model: nn.Module = None
@@ -94,9 +95,15 @@ async def load_model(model_info: Model):
     if model_type not in model_func_map:
         raise ReException(ErrorCode.INVALID_MODEL)
 
-    model = model_func_map[model_type](model_info.dim)
     try:
-        model.load_state_dict(torch.load(model_info.model))
+        feature_file = model_info.feature or resolve_feature_file(model_info.model)
+        if feature_file:
+            feature_service.load_all_features(str(feature_file))
+            effective_dim = feature_service.feature_dim
+        else:
+            effective_dim = model_info.dim
+        model = model_func_map[model_type](effective_dim)
+        model.load_state_dict(torch.load(model_info.model, map_location="cpu"))
         model.eval()
     except FileNotFoundError as fnfe:
         raise ReException(ErrorCode.MODEL_NOT_FOUND)
@@ -139,10 +146,12 @@ def score(user_items: UserItems):
                     dim=0
                 ))
                 hit_items.append(item_id)
+            if not batch_features:
+                return item_score_map
             with torch.no_grad():
                 score = model(torch.stack(batch_features))
 
-            hit_item_scores = score.squeeze().tolist()
+            hit_item_scores = score.reshape(-1).tolist()
             for h_item_id, h_item_score in zip(hit_items, hit_item_scores):
                 item_score_map[h_item_id] = h_item_score
 

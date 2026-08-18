@@ -1,7 +1,5 @@
-fastapi==0.111.0
-torch==2.2.2
-fastapi==0.111.0
-fastapi-cli==0.0.4
-starlette==0.37.2
-redis==5.0.7
+fastapi==0.141.1
+torch==2.10.0
+fastapi-cli==0.0.32
+redis==8.1.0
 rec-algorithm==0.0.1

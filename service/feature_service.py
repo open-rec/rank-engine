@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from algorithm.feature.item_feature import ItemFeature
 from algorithm.feature.user_feature import UserFeature
+from algorithm.feature.feature_space import FeatureSpace
 
 from sugar import singleton
 from util.redis_util import get_redis_client
@@ -16,11 +17,24 @@ class FeatureService(object):
     def __init__(self):
         self.user_feature_map = {}
         self.item_feature_map = {}
+        self.feature_dim = 0
         self.load_all_features()
 
-    def load_all_features(self):
+    def load_all_features(self, feature_file=None):
         user_feature = self.load_user_feature()
         item_feature = self.load_item_feature()
+
+        if user_feature.users.empty or item_feature.items.empty:
+            self.user_feature_map = {}
+            self.item_feature_map = {}
+            return
+
+        if feature_file:
+            space = FeatureSpace.load(feature_file)
+            self.user_feature_map, self.item_feature_map = space.build_maps(
+                user_feature.users, item_feature.items)
+            self.feature_dim = space.dim
+            return
 
         user_features = np.hstack([
             user_feature.country,
@@ -45,6 +59,7 @@ class FeatureService(object):
             item_id: item_features[i]
             for i, item_id in enumerate(item_feature.raw_id)
         }
+        self.feature_dim = user_features.shape[1] + item_features.shape[1]
 
     @staticmethod
     def _batch_load(key_pattern="*", batch_size=500):
@@ -61,7 +76,7 @@ class FeatureService(object):
                 try:
                     key_values[key] = json.loads(value.decode("utf-8"))
                 except Exception as e:
-                    logging.warn(f"load key:{key}, value:{value} failed")
+                    logging.warning(f"load key:{key}, value:{value} failed")
                     continue
             batch_keys.clear()
 

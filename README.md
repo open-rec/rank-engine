@@ -67,7 +67,7 @@ easily missed:
 ```shell
 curl -X POST http://127.0.0.1:8000/model/load \
   -H 'Content-Type: application/json' \
-  -d '{"type": "lr", "model": "model/lr.pth", "dim": 63}'
+  -d '{"type": "lr", "model": "model/rank/default/lr.pth", "feature": "model/feature/default/lr.features.json"}'
 ```
 
 | Field | Default | Meaning |
@@ -75,11 +75,15 @@ curl -X POST http://127.0.0.1:8000/model/load \
 | `type` | `lr` | key into `model_func_map`; only `lr` is implemented |
 | `model` | `lr.pth` | path to the `state_dict`, relative to the working directory |
 | `dim` | `1024` | input feature width — **must** match what the checkpoint was trained with |
+| `feature` | `null` | persisted feature-space JSON; inferred from the model path when possible |
 
-`dim` is not cosmetic: it constructs `LRModel(dim)` before `load_state_dict`, so a mismatch fails to
-load. The correct value depends on the one-hot cardinality of the data in Redis, which changes with
-the dataset — the pre-trained Douban checkpoint in
-[model](https://github.com/open-rec/model) is 63.
+When `feature` is available, rank-engine encodes the already-materialized Redis user/item rows with
+the exact training vocabulary and derives `dim` from it. `dim` remains only as a compatibility
+fallback for legacy checkpoints without a sidecar.
+
+For a legacy model without a feature sidecar, `dim` constructs `LRModel(dim)` before
+`load_state_dict`, so a mismatch fails to load. The pre-trained Douban checkpoint in
+[model](https://github.com/open-rec/model) uses 63.
 
 ### score
 
