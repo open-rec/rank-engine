@@ -28,7 +28,7 @@ services:
     volumes:
       - ../model:/models:ro
     ports:
-      - "8000:8000"
+      - "8123:8123"
     networks:
       - openrec-bigdata
 

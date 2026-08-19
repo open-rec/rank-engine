@@ -3,7 +3,7 @@
 Online ranking service for open-rec. `rec-server`'s `rank` DAG node POSTs a user plus a candidate
 item list here and gets a score per item back, which it adds to the recall scores.
 
-FastAPI + PyTorch, listening on port 8000.
+FastAPI + PyTorch, listening on port 8123.
 
 ## how it fits in
 
@@ -40,7 +40,7 @@ bash start.sh            # uvicorn server:app --reload
 ```
 
 All settings can be supplied through environment variables; local defaults still use Redis on
-`localhost:6379` and listen on `0.0.0.0:8000`. Interactive docs: http://127.0.0.1:8000/docs
+`localhost:6379` and listen on `0.0.0.0:8123`. Interactive docs: http://127.0.0.1:8123/docs
 
 Features are loaded when a model is loaded, not while the Python module is imported. Redis is read
 with incremental `SCAN` calls rather than the blocking `KEYS` command. The cache refreshes every
@@ -53,7 +53,7 @@ Start `bigdata-platform` first so its external Docker network and Redis service 
 
 ```shell
 docker compose -f docker-compose.cluster.yml up -d --build
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8123/health
 ```
 
 The compose build uses the PyTorch 2.8 GPU base image with CUDA 12.9 and installs
@@ -70,7 +70,7 @@ For a host-side `rec-server`, use:
 ```properties
 rank.open=true
 rank.host=127.0.0.1
-rank.port=8000
+rank.port=8123
 ```
 
 If `rec-server` also runs in the `openrec-bigdata` Docker network, use `rank.host=rank-engine`.
@@ -92,7 +92,7 @@ If `rec-server` also runs in the `openrec-bigdata` Docker network, use `rank.hos
 easily missed:
 
 ```shell
-curl -X POST http://127.0.0.1:8000/model/load \
+curl -X POST http://127.0.0.1:8123/model/load \
   -H 'Content-Type: application/json' \
   -d '{"type": "lr", "model": "model/rank/default/lr.pth", "feature": "model/feature/default/lr.features.json"}'
 ```
@@ -115,7 +115,7 @@ For a legacy model without a feature sidecar, `dim` constructs `LRModel(dim)` be
 ### score
 
 ```shell
-curl -X POST http://127.0.0.1:8000/model/score \
+curl -X POST http://127.0.0.1:8123/model/score \
   -H 'Content-Type: application/json' \
   -d '{"user_id": "test", "item_ids": ["5105858", "3785327", "123"]}'
 ```
@@ -163,7 +163,7 @@ Train a checkpoint with `rec-algorithm`, or download the Douban one:
 | `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB` | `localhost`, `6379`, `0` | feature store |
 | `REDIS_PASSWORD` | empty | optional Redis password |
 | `REDIS_SOCKET_TIMEOUT` | `2` | connect/read timeout in seconds |
-| `RANK_HOST`, `RANK_PORT` | `0.0.0.0`, `8000` | HTTP bind address |
+| `RANK_HOST`, `RANK_PORT` | `0.0.0.0`, `8123` | HTTP bind address |
 | `RANK_WORKERS` | `1` | Uvicorn worker processes |
 | `MODEL_TYPE` | `lr` | registered model type |
 | `MODEL_PATH` | empty | checkpoint loaded at startup and retried lazily |
@@ -174,4 +174,4 @@ Train a checkpoint with `rec-algorithm`, or download the Douban one:
 | `FEATURE_REFRESH_SECONDS` | `300` | Redis feature cache refresh interval; `0` disables |
 
 `rec-server` reaches this service via `rank.host` / `rank.port` in its
-`application-cluster.properties`, defaulting to `127.0.0.1:8000`.
+`application-cluster.properties`, defaulting to `127.0.0.1:8123`.

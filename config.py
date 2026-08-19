@@ -15,7 +15,7 @@ class RedisConfig(object):
 
 class ServerConfig(object):
     HOST = os.getenv("RANK_HOST", "0.0.0.0")
-    PORT = _int("RANK_PORT", 8000)
+    PORT = _int("RANK_PORT", 8123)
     WORKERS = _int("RANK_WORKERS", 1)
 
 
