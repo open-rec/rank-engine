@@ -1,5 +1,5 @@
 import json
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,7 +13,7 @@ class Model(BaseModel):
 
 class UserItems(BaseModel):
     user_id: str = Field(default="", description="user id")
-    item_ids: list = Field(default=[], description="user score items")
+    item_ids: List[str] = Field(default_factory=list, description="user score items")
 
 
 class ReResponse:

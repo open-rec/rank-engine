@@ -27,4 +27,5 @@ class ErrorCode(Enum):
 class ReException(HTTPException):
 
     def __init__(self, error_code: ErrorCode):
-        super().__init__(status_code=error_code.code, detail=error_code.message)
+        self.error_code = error_code
+        super().__init__(status_code=200, detail=error_code.message)

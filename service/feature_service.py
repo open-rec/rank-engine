@@ -1,5 +1,7 @@
 import json
 import logging
+import threading
+import time
 
 import numpy as np
 import pandas as pd
@@ -18,22 +20,30 @@ class FeatureService(object):
         self.user_feature_map = {}
         self.item_feature_map = {}
         self.feature_dim = 0
-        self.load_all_features()
+        self.feature_file = None
+        self.loaded_at = 0
+        self.lock = threading.RLock()
 
     def load_all_features(self, feature_file=None):
+        feature_file = feature_file or self.feature_file
         user_feature = self.load_user_feature()
         item_feature = self.load_item_feature()
 
         if user_feature.users.empty or item_feature.items.empty:
-            self.user_feature_map = {}
-            self.item_feature_map = {}
+            with self.lock:
+                self.user_feature_map = {}
+                self.item_feature_map = {}
+                self.loaded_at = time.monotonic()
             return
 
         if feature_file:
             space = FeatureSpace.load(feature_file)
-            self.user_feature_map, self.item_feature_map = space.build_maps(
-                user_feature.users, item_feature.items)
-            self.feature_dim = space.dim
+            user_map, item_map = space.build_maps(user_feature.users, item_feature.items)
+            with self.lock:
+                self.user_feature_map, self.item_feature_map = user_map, item_map
+                self.feature_dim = space.dim
+                self.feature_file = feature_file
+                self.loaded_at = time.monotonic()
             return
 
         user_features = np.hstack([
@@ -50,43 +60,42 @@ class FeatureService(object):
             item_feature.weight,
         ])
 
-        self.user_feature_map = {
+        user_map = {
             user_id: user_features[i]
             for i, user_id in enumerate(user_feature.raw_id)
         }
 
-        self.item_feature_map = {
+        item_map = {
             item_id: item_features[i]
             for i, item_id in enumerate(item_feature.raw_id)
         }
-        self.feature_dim = user_features.shape[1] + item_features.shape[1]
+        with self.lock:
+            self.user_feature_map = user_map
+            self.item_feature_map = item_map
+            self.feature_dim = user_features.shape[1] + item_features.shape[1]
+            self.loaded_at = time.monotonic()
 
     @staticmethod
     def _batch_load(key_pattern="*", batch_size=500):
         redis_client = get_redis_client()
-        keys = redis_client.keys(key_pattern)
-        length = len(keys)
-        tick = 0
         key_values = {}
         batch_keys = []
 
-        def update_key_values(batch_keys=[]):
-            values = redis_client.batch_get_values(batch_keys)
-            for key, value in zip(batch_keys, values):
+        def update_key_values(keys):
+            values = redis_client.batch_get_values(keys)
+            for key, value in zip(keys, values):
                 try:
                     key_values[key] = json.loads(value.decode("utf-8"))
                 except Exception as e:
                     logging.warning(f"load key:{key}, value:{value} failed")
                     continue
-            batch_keys.clear()
-
-        while tick < length:
-            batch_keys.append(keys[tick].decode("utf-8"))
-            tick += 1
-            if tick % batch_size == 0:
-                update_key_values(batch_keys=batch_keys)
+        for key in redis_client.scan_iter(key_pattern, count=batch_size):
+            batch_keys.append(key.decode("utf-8"))
+            if len(batch_keys) >= batch_size:
+                update_key_values(batch_keys)
+                batch_keys = []
         if batch_keys:
-            update_key_values(batch_keys=batch_keys)
+            update_key_values(batch_keys)
 
         filter_values = {key: value for key, value in key_values.items() if value}
         return {i: value for i, value in enumerate(filter_values.values())}
@@ -104,7 +113,18 @@ class FeatureService(object):
         return item_feature
 
     def get_item_feature_by_id(self, id=""):
-        return self.item_feature_map.get(id)
+        with self.lock:
+            return self.item_feature_map.get(id)
 
     def get_user_feature_by_id(self, id=""):
-        return self.user_feature_map.get(id)
+        with self.lock:
+            return self.user_feature_map.get(id)
+
+    def refresh_if_stale(self, seconds):
+        if seconds > 0 and time.monotonic() - self.loaded_at >= seconds:
+            self.load_all_features()
+
+    def stats(self):
+        with self.lock:
+            return {"users": len(self.user_feature_map), "items": len(self.item_feature_map),
+                    "dim": self.feature_dim}

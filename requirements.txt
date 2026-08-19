@@ -1,5 +1,5 @@
-fastapi==0.141.1
+--index-url https://mirrors.aliyun.com/pypi/simple/
+--trusted-host mirrors.aliyun.com
+
+-r requirements-common.txt
 torch==2.10.0
-fastapi-cli==0.0.32
-redis==8.1.0
-rec-algorithm==0.0.1

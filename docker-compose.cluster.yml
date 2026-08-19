@@ -1,0 +1,38 @@
+services:
+  rank-engine:
+    build:
+      context: .
+      additional_contexts:
+        algorithm: ../rec-algorithm
+    image: openrec/rank-engine:latest
+    container_name: rank-engine
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MODEL_TYPE: lr
+      MODEL_PATH: /models/rank/default/lr.pth
+      MODEL_FEATURE_PATH: /models/feature/default/lr.features.json
+      MODEL_REQUIRED: "false"
+      MODEL_DEVICE: auto
+      FEATURE_REFRESH_SECONDS: 300
+      RANK_WORKERS: 1
+      NVIDIA_VISIBLE_DEVICES: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../model:/models:ro
+    ports:
+      - "8000:8000"
+    networks:
+      - openrec-bigdata
+
+networks:
+  openrec-bigdata:
+    external: true
+    name: openrec-bigdata

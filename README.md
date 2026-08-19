@@ -19,15 +19,13 @@ succeeds, so check the logs rather than assuming ranking is live.
 
 ## install
 
-`requirements.txt` pins `rec-algorithm==0.0.1`; the model class (`LRModel`) and the feature encoders
-come from that package, so build its wheel first:
+The model class (`LRModel`) and feature encoders come from the sibling `rec-algorithm` project.
+Install it before rank-engine when running directly on the host:
 
 ```shell
-git clone https://github.com/open-rec/rec-algorithm.git
 cd rec-algorithm
 pip install -r requirements.txt
-bash package.sh
-pip install dist/rec_algorithm-0.0.1-*.whl
+pip install -e .
 ```
 
 ```shell
@@ -41,13 +39,41 @@ pip install -r requirements.txt
 bash start.sh            # uvicorn server:app --reload
 ```
 
-Host and port come from `config.py` (`ServerConfig`), Redis from `RedisConfig` — both default to
-localhost. Interactive docs: http://127.0.0.1:8000/docs
+All settings can be supplied through environment variables; local defaults still use Redis on
+`localhost:6379` and listen on `0.0.0.0:8000`. Interactive docs: http://127.0.0.1:8000/docs
 
-**Redis must be populated before startup.** `FeatureService` is a singleton that runs at import time:
-it scans every `user:*` and `item:*` key, builds one-hot / scaled features with `rec-algorithm`'s
-`UserFeature` and `ItemFeature`, and caches them in memory. Starting against an empty Redis yields
-empty feature maps, and new data pushed later is not picked up until restart.
+Features are loaded when a model is loaded, not while the Python module is imported. Redis is read
+with incremental `SCAN` calls rather than the blocking `KEYS` command. The cache refreshes every
+`FEATURE_REFRESH_SECONDS` (300 by default), and `/model/refresh-features` can force an immediate
+refresh. If automatic loading starts before Redis has data, the first score request retries it.
+
+## cluster mode
+
+Start `bigdata-platform` first so its external Docker network and Redis service exist, then:
+
+```shell
+docker compose -f docker-compose.cluster.yml up -d --build
+curl http://127.0.0.1:8000/health
+```
+
+The compose build uses the PyTorch 2.8 GPU base image with CUDA 12.9 and installs
+all remaining pip packages from the Alibaba Cloud mirror. A direct host install uses the same mirror
+and installs the CUDA-enabled `torch==2.10.0` package. The image
+uses the sibling `rec-algorithm` directory as a BuildKit additional context, joins
+`openrec-bigdata`, reads Redis at `redis:6379`, mounts the sibling `model` repository read-only at
+`/models`, requests all visible NVIDIA GPUs, and automatically loads the default LR checkpoint.
+`MODEL_DEVICE=auto` selects CUDA when available and otherwise falls back to CPU. Keep one worker
+unless each worker having its own model and feature cache is intentional.
+
+For a host-side `rec-server`, use:
+
+```properties
+rank.open=true
+rank.host=127.0.0.1
+rank.port=8000
+```
+
+If `rec-server` also runs in the `openrec-bigdata` Docker network, use `rank.host=rank-engine`.
 
 ## api
 
@@ -56,6 +82,7 @@ empty feature maps, and new data pushed later is not picked up until restart.
 | GET | `/health` | liveness |
 | POST | `/model/load` | load a checkpoint into memory |
 | POST | `/model/score` | score items for a user |
+| POST | `/model/refresh-features` | rebuild the Redis-backed feature cache |
 | POST | `/clean` | drop the loaded model and free CUDA cache |
 | GET | `/` | static `index.html` |
 
@@ -131,12 +158,20 @@ Train a checkpoint with `rec-algorithm`, or download the Douban one:
 
 ## configuration
 
-`config.py`, edited in place — there is no env-var override:
-
-```python
-class RedisConfig:  HOST = "localhost"; PORT = 6379; DB = 0
-class ServerConfig: HOST = "0.0.0.0";   PORT = 8000
-```
+| Variable | Default | Meaning |
+|---|---|---|
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB` | `localhost`, `6379`, `0` | feature store |
+| `REDIS_PASSWORD` | empty | optional Redis password |
+| `REDIS_SOCKET_TIMEOUT` | `2` | connect/read timeout in seconds |
+| `RANK_HOST`, `RANK_PORT` | `0.0.0.0`, `8000` | HTTP bind address |
+| `RANK_WORKERS` | `1` | Uvicorn worker processes |
+| `MODEL_TYPE` | `lr` | registered model type |
+| `MODEL_PATH` | empty | checkpoint loaded at startup and retried lazily |
+| `MODEL_FEATURE_PATH` | inferred | training feature-space sidecar |
+| `MODEL_DIM` | `1024` | legacy checkpoint fallback dimension |
+| `MODEL_REQUIRED` | `false` | fail startup when automatic loading fails |
+| `MODEL_DEVICE` | `auto` | inference device: `auto`, `cuda`, `cuda:0`, or `cpu` |
+| `FEATURE_REFRESH_SECONDS` | `300` | Redis feature cache refresh interval; `0` disables |
 
 `rec-server` reaches this service via `rank.host` / `rank.port` in its
-`application-{dev,prod}.properties`, defaulting to `127.0.0.1:8000`.
+`application-cluster.properties`, defaulting to `127.0.0.1:8000`.
