@@ -11,6 +11,18 @@ class Model(BaseModel):
     feature: Optional[str] = Field(default=None, description="optional FeatureSpace JSON sidecar")
 
 
+class TrainModel(BaseModel):
+    scene: str
+    version: str
+    business_date: str
+    revision: str
+    dataset_dir: str
+    epochs: int = Field(default=5, ge=1, le=100)
+    batch_size: int = Field(default=256, ge=1)
+    validation_ratio: float = Field(default=.2, gt=0, lt=1)
+    min_auc: float = Field(default=0.0, ge=0, le=1)
+
+
 class UserItems(BaseModel):
     user_id: str = Field(default="", description="user id")
     item_ids: List[str] = Field(default_factory=list, description="user score items")

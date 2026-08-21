@@ -25,26 +25,24 @@ class FeatureService(object):
         self.lock = threading.RLock()
 
     def load_all_features(self, feature_file=None):
+        snapshot = self.prepare_all_features(feature_file)
+        self.activate(snapshot)
+
+    def prepare_all_features(self, feature_file=None):
+        """Build a feature snapshot without changing the live scorer."""
         feature_file = feature_file or self.feature_file
         user_feature = self.load_user_feature()
         item_feature = self.load_item_feature()
 
         if user_feature.users.empty or item_feature.items.empty:
-            with self.lock:
-                self.user_feature_map = {}
-                self.item_feature_map = {}
-                self.loaded_at = time.monotonic()
-            return
+            return {"users": {}, "items": {}, "dim": 0,
+                    "feature_file": feature_file}
 
         if feature_file:
             space = FeatureSpace.load(feature_file)
             user_map, item_map = space.build_maps(user_feature.users, item_feature.items)
-            with self.lock:
-                self.user_feature_map, self.item_feature_map = user_map, item_map
-                self.feature_dim = space.dim
-                self.feature_file = feature_file
-                self.loaded_at = time.monotonic()
-            return
+            return {"users": user_map, "items": item_map, "dim": space.dim,
+                    "feature_file": feature_file}
 
         user_features = np.hstack([
             user_feature.country,
@@ -69,10 +67,16 @@ class FeatureService(object):
             item_id: item_features[i]
             for i, item_id in enumerate(item_feature.raw_id)
         }
+        return {"users": user_map, "items": item_map,
+                "dim": user_features.shape[1] + item_features.shape[1],
+                "feature_file": feature_file}
+
+    def activate(self, snapshot):
         with self.lock:
-            self.user_feature_map = user_map
-            self.item_feature_map = item_map
-            self.feature_dim = user_features.shape[1] + item_features.shape[1]
+            self.user_feature_map = snapshot["users"]
+            self.item_feature_map = snapshot["items"]
+            self.feature_dim = snapshot["dim"]
+            self.feature_file = snapshot["feature_file"]
             self.loaded_at = time.monotonic()
 
     @staticmethod

@@ -1,10 +1,17 @@
 import logging
 import os
+import json
+import re
+import shutil
+import tempfile
 import threading
+from datetime import datetime, timezone
+from pathlib import Path
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 import numpy as np
+import pandas as pd
 import torch
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -13,7 +20,10 @@ from algorithm.utils.file_util import resolve_feature_file
 from config import Config
 from error_code import ErrorCode, ReException
 from model import model_func_map
-from proto import Model, ReResponse, UserItems
+from algorithm.feature.item_feature import ItemFeature
+from algorithm.feature.user_feature import UserFeature
+from algorithm.rank.lr import LRRecModel
+from proto import Model, ReResponse, TrainModel, UserItems
 from service.feature_service import FeatureService
 from util.redis_util import get_redis_client
 
@@ -55,6 +65,9 @@ async def unknown_exception_handler(request: Request, exception: Exception):
 
 @app.on_event("startup")
 def startup():
+    for directory in (Path("/models/training"), Path("/models/releases")):
+        directory.mkdir(parents=True, exist_ok=True)
+        directory.chmod(0o777 if directory.name == "training" else 0o755)
     if not Config.MODEL.PATH:
         logging.warning("MODEL_PATH is not configured; score requests remain disabled")
         return
@@ -93,14 +106,16 @@ def _load_model(info):
         raise ReException(ErrorCode.INVALID_MODEL)
     with load_lock:
         feature_file = info.feature or resolve_feature_file(info.model)
-        feature_service.load_all_features(str(feature_file) if feature_file else None)
-        effective_dim = feature_service.feature_dim if feature_file else info.dim
+        snapshot = feature_service.prepare_all_features(
+            str(feature_file) if feature_file else None)
+        effective_dim = snapshot["dim"] if feature_file else info.dim
         device = model_device()
         loaded_model = model_func_map[model_type](effective_dim)
         loaded_model.load_state_dict(torch.load(info.model, map_location=device))
         loaded_model.to(device)
         loaded_model.eval()
         with model_lock:
+            feature_service.activate(snapshot)
             model = loaded_model
             model_info = {"type": model_type, "path": info.model,
                           "feature": str(feature_file) if feature_file else None,
@@ -118,6 +133,55 @@ def load_model(info: Model):
         raise ReException(ErrorCode.MODEL_NOT_FOUND)
     except Exception:
         logging.exception("model load failed")
+        raise ReException(ErrorCode.LOAD_MODEL_FAILED)
+
+
+@app.post("/model/train")
+def train_model(info: TrainModel):
+    """Train one immutable artifact version from a Spark-prepared local dataset."""
+    dataset = Path(info.dataset_dir).resolve()
+    training_root = Path("/models/training").resolve()
+    artifact_root = Path("/models/releases").resolve()
+    if training_root not in dataset.parents or not re.match(r"^[A-Za-z0-9_-]+$", info.scene):
+        raise ReException(ErrorCode.INVALID_MODEL)
+    target = artifact_root / info.scene / info.version
+    if target.exists():
+        raise ReException(ErrorCode.LOAD_MODEL_FAILED)
+    scene_root = artifact_root / info.scene
+    scene_root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".%s-" % info.version,
+                                   dir=str(scene_root)))
+    try:
+        events = pd.read_json(dataset / "events.jsonl", lines=True)
+        items = pd.read_json(dataset / "items.jsonl", lines=True)
+        users = pd.read_json(dataset / "users.jsonl", lines=True)
+        rank_model = LRRecModel(UserFeature(users, events), ItemFeature(items, events), events,
+                                scene=info.scene, model_file=staging / "lr.pth",
+                                feature_file=staging / "lr.features.json")
+        rank_model.train(epoch_num=info.epochs, batch_size=info.batch_size,
+                         val_ratio=info.validation_ratio)
+        _, validation = rank_model._split(val_ratio=info.validation_ratio, seed=42)
+        auc = rank_model.evaluate(validation, batch_size=info.batch_size)
+        if auc is None and info.min_auc > 0:
+            raise ValueError("AUC is undefined for validation data")
+        if auc is not None and auc < info.min_auc:
+            raise ValueError("AUC %.6f is below %.6f" % (auc, info.min_auc))
+        rank_model.save()
+        manifest = {"version": info.version, "scene": info.scene, "model_type": "lr",
+                    "business_date": info.business_date, "revision": info.revision,
+                    "created_at": datetime.now(timezone.utc).isoformat(), "status": "evaluated",
+                    "model": "lr.pth", "feature": "lr.features.json",
+                    "metrics": {"auc": auc, "positive_rate": rank_model.dataset.positive_rate,
+                                "samples": len(rank_model.dataset),
+                                "feature_dim": rank_model.model.dim},
+                    "gate": {"min_auc": info.min_auc, "passed": True}}
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+        os.replace(staging, target)
+        shutil.rmtree(dataset, ignore_errors=True)
+        return response(manifest)
+    except Exception:
+        logging.exception("model training failed")
+        shutil.rmtree(staging, ignore_errors=True)
         raise ReException(ErrorCode.LOAD_MODEL_FAILED)
 
 

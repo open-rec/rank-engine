@@ -11,14 +11,15 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       MODEL_TYPE: lr
-      MODEL_PATH: /models/rank/default/lr.pth
-      MODEL_FEATURE_PATH: /models/feature/default/lr.features.json
+      MODEL_PATH: /bootstrap-models/rank/default/lr.pth
+      MODEL_FEATURE_PATH: /bootstrap-models/feature/default/lr.features.json
       MODEL_REQUIRED: "false"
       MODEL_DEVICE: auto
       FEATURE_REFRESH_SECONDS: 300
       RANK_WORKERS: 1
     volumes:
-      - ../model:/models:ro
+      - openrec-model-artifacts:/models
+      - ../model:/bootstrap-models:ro
     ports:
       - "8123:8123"
     networks:
@@ -28,3 +29,7 @@ networks:
   openrec-bigdata:
     external: true
     name: openrec-bigdata
+
+volumes:
+  openrec-model-artifacts:
+    name: openrec-model-artifacts

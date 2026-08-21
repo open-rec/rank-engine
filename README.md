@@ -88,10 +88,17 @@ If `rec-server` also runs in the `openrec-bigdata` Docker network, use `rank.hos
 |---|---|---|
 | GET | `/health` | liveness |
 | POST | `/model/load` | load a checkpoint into memory |
+| POST | `/model/train` | train and evaluate one immutable release from Spark-prepared JSONL |
 | POST | `/model/score` | score items for a user |
 | POST | `/model/refresh-features` | rebuild the Redis-backed feature cache |
 | POST | `/clean` | drop the loaded model and free CUDA cache |
 | GET | `/` | static `index.html` |
+
+In cluster mode `/model/train` is internal. It accepts a dataset below `/models/training`, writes
+the checkpoint, FeatureSpace sidecar, metrics, and evaluation gate to
+`/models/releases/{scene}/{version}`, then atomically exposes that immutable directory. Loading a
+new release builds both its model and feature snapshot before changing the live scorer, so a failed
+load leaves the previously active version usable.
 
 ### load a model first
 
