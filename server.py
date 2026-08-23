@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 import torch
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, Gauge, generate_latest
 
 from algorithm.utils.file_util import resolve_feature_file
 from config import Config
@@ -33,6 +34,30 @@ model_info = None
 model_lock = threading.RLock()
 load_lock = threading.Lock()
 feature_service = FeatureService()
+request_count = Counter("openrec_rank_requests", "Rank Engine requests", ["method", "path", "status"])
+request_latency = Histogram("openrec_rank_request_latency_seconds", "Rank Engine request latency", ["method", "path"])
+model_loaded = Gauge("openrec_rank_model_loaded", "Whether a ranking model is loaded")
+
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    if request.url.path == "/metrics":
+        return await call_next(request)
+    with request_latency.labels(request.method, request.url.path).time():
+        try:
+            result = await call_next(request)
+            request_count.labels(request.method, request.url.path, str(result.status_code)).inc()
+            return result
+        except Exception:
+            request_count.labels(request.method, request.url.path, "500").inc()
+            raise
+
+
+@app.get("/metrics")
+def metrics():
+    with model_lock:
+        model_loaded.set(1 if model is not None else 0)
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 def model_device():
