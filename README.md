@@ -113,10 +113,11 @@ curl -X POST http://127.0.0.1:8123/model/load \
 
 | Field | Default | Meaning |
 |---|---|---|
-| `type` | `lr` | key into `model_func_map`; only `lr` is implemented |
+| `type` | `lr` | registered model type: `lr` or `fm` |
 | `model` | `lr.pth` | path to the `state_dict`, relative to the working directory |
 | `dim` | `1024` | input feature width — **must** match what the checkpoint was trained with |
 | `feature` | `null` | persisted feature-space JSON; inferred from the model path when possible |
+| `factor_dim` | inferred | optional FM latent width; normally inferred from the checkpoint |
 
 When `feature` is available, rank-engine encodes the already-materialized Redis user/item rows with
 the exact training vocabulary and derives `dim` from it. `dim` remains only as a compatibility
@@ -152,16 +153,19 @@ Items with no cached features score `0.0` rather than being dropped (`123` above
 
 ## models
 
-Only LR is implemented. `model_func_map` in `model.py` maps a `type` string to a class from
-`rec-algorithm`:
+LR and FM are implemented. Both consume the same persisted `FeatureSpace` vector; FM adds
+second-order feature interactions without changing Redis materialization or `/model/score`.
+`model_func_map` maps a `type` string to a class from `rec-algorithm`:
 
 ```python
 model_func_map = {
     "lr": LRModel,
+    "fm": FMModel,
 }
 ```
 
-To add one, implement it in `rec-algorithm` (`algorithm/rank/`) and register it here.
+FM's `factor_dim` defaults to 8 during training and is recorded in the manifest. Loading also
+derives it from the `factors` tensor, so activation and rollback remain self-contained.
 
 Train a checkpoint with `rec-algorithm`, or download the Douban one:
 
@@ -189,3 +193,16 @@ Train a checkpoint with `rec-algorithm`, or download the Douban one:
 
 `rec-server` reaches this service via `rank.host` / `rank.port` in its
 `application-cluster.properties`, defaulting to `127.0.0.1:8123`.
+
+## test
+
+Install the sibling algorithm package and test dependencies, then run the focused unit suite:
+
+```shell
+pip install -e ../rec-algorithm
+pip install -r requirements-test.txt
+pytest -q test
+```
+
+The tests use in-memory feature snapshots and temporary checkpoints; Redis and a running
+rank-engine service are not required.

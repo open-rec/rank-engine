@@ -24,6 +24,7 @@ from model import model_func_map
 from algorithm.feature.item_feature import ItemFeature
 from algorithm.feature.user_feature import UserFeature
 from algorithm.rank.lr import LRRecModel
+from algorithm.rank.fm import FMRecModel
 from proto import Model, ReResponse, TrainModel, UserItems
 from service.feature_service import FeatureService
 from util.redis_util import get_redis_client
@@ -135,8 +136,15 @@ def _load_model(info):
             str(feature_file) if feature_file else None)
         effective_dim = snapshot["dim"] if feature_file else info.dim
         device = model_device()
-        loaded_model = model_func_map[model_type](effective_dim)
-        loaded_model.load_state_dict(torch.load(info.model, map_location=device))
+        state = torch.load(info.model, map_location=device)
+        kwargs = {}
+        if model_type == "fm":
+            factors = state.get("factors")
+            if factors is None or factors.ndim != 2 or factors.shape[0] != effective_dim:
+                raise ValueError("FM checkpoint factors do not match the feature dimension")
+            kwargs["factor_dim"] = info.factor_dim or factors.shape[1]
+        loaded_model = model_func_map[model_type](effective_dim, **kwargs)
+        loaded_model.load_state_dict(state)
         loaded_model.to(device)
         loaded_model.eval()
         with model_lock:
@@ -144,7 +152,8 @@ def _load_model(info):
             model = loaded_model
             model_info = {"type": model_type, "path": info.model,
                           "feature": str(feature_file) if feature_file else None,
-                          "dim": effective_dim, "device": str(device)}
+                          "dim": effective_dim, "device": str(device),
+                          **({"factor_dim": loaded_model.factor_dim} if model_type == "fm" else {})}
     return model_info
 
 
@@ -180,9 +189,15 @@ def train_model(info: TrainModel):
         events = pd.read_json(dataset / "events.jsonl", lines=True)
         items = pd.read_json(dataset / "items.jsonl", lines=True)
         users = pd.read_json(dataset / "users.jsonl", lines=True)
-        rank_model = LRRecModel(UserFeature(users, events), ItemFeature(items, events), events,
-                                scene=info.scene, model_file=staging / "lr.pth",
-                                feature_file=staging / "lr.features.json")
+        model_type = info.model_type.strip().lower()
+        model_filename = "%s.pth" % model_type
+        feature_filename = "%s.features.json" % model_type
+        model_class = {"lr": LRRecModel, "fm": FMRecModel}[model_type]
+        model_kwargs = {"factor_dim": info.factor_dim} if model_type == "fm" else {}
+        rank_model = model_class(
+            UserFeature(users, events), ItemFeature(items, events), events,
+            scene=info.scene, model_file=staging / model_filename,
+            feature_file=staging / feature_filename, **model_kwargs)
         rank_model.train(epoch_num=info.epochs, batch_size=info.batch_size,
                          val_ratio=info.validation_ratio)
         _, validation = rank_model._split(val_ratio=info.validation_ratio, seed=42)
@@ -192,13 +207,15 @@ def train_model(info: TrainModel):
         if auc is not None and auc < info.min_auc:
             raise ValueError("AUC %.6f is below %.6f" % (auc, info.min_auc))
         rank_model.save()
-        manifest = {"version": info.version, "scene": info.scene, "model_type": "lr",
+        manifest = {"version": info.version, "scene": info.scene, "model_type": model_type,
                     "business_date": info.business_date, "revision": info.revision,
                     "created_at": datetime.now(timezone.utc).isoformat(), "status": "evaluated",
-                    "model": "lr.pth", "feature": "lr.features.json",
+                    "model": model_filename, "feature": feature_filename,
                     "metrics": {"auc": auc, "positive_rate": rank_model.dataset.positive_rate,
                                 "samples": len(rank_model.dataset),
-                                "feature_dim": rank_model.model.dim},
+                                "feature_dim": rank_model.model.dim,
+                                **({"factor_dim": rank_model.model.factor_dim}
+                                   if model_type == "fm" else {})},
                     "gate": {"min_auc": info.min_auc, "passed": True}}
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
         os.replace(staging, target)

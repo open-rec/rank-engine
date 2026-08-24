@@ -9,6 +9,7 @@ class Model(BaseModel):
     dim: int = Field(default=1024)
     type: str = Field(default="lr")
     feature: Optional[str] = Field(default=None, description="optional FeatureSpace JSON sidecar")
+    factor_dim: Optional[int] = Field(default=None, ge=1, le=256)
 
 
 class TrainModel(BaseModel):
@@ -21,6 +22,8 @@ class TrainModel(BaseModel):
     batch_size: int = Field(default=256, ge=1)
     validation_ratio: float = Field(default=.2, gt=0, lt=1)
     min_auc: float = Field(default=0.0, ge=0, le=1)
+    model_type: str = Field(default="lr", pattern="^(lr|fm)$")
+    factor_dim: int = Field(default=8, ge=1, le=256)
 
 
 class UserItems(BaseModel):
