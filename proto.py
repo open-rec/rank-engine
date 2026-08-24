@@ -24,6 +24,7 @@ class TrainModel(BaseModel):
     min_auc: float = Field(default=0.0, ge=0, le=1)
     model_type: str = Field(default="lr", pattern="^(lr|fm)$")
     factor_dim: int = Field(default=8, ge=1, le=256)
+    feature_cutoff_time: int = Field(ge=0)
 
 
 class UserItems(BaseModel):

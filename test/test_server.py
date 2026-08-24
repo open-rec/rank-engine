@@ -5,7 +5,7 @@ import torch
 from algorithm.rank.fm import FMModel
 from algorithm.rank.lr import LRModel
 from error_code import ErrorCode, ReException
-from proto import Model, UserItems
+from proto import Model, TrainModel, UserItems
 import server
 
 
@@ -155,3 +155,14 @@ def test_empty_item_list_does_not_touch_feature_store(monkeypatch):
         server.feature_service, "refresh_if_stale",
         lambda seconds: pytest.fail("feature store should not be touched"))
     assert server.score(UserItems(user_id="u1", item_ids=[]))["data"] == {}
+
+
+def test_train_request_requires_auditable_feature_cutoff():
+    with pytest.raises(ValueError):
+        TrainModel(scene="home", version="20260824-r001", business_date="2026-08-24",
+                   revision="r001", dataset_dir="/models/training/home/run")
+
+    request = TrainModel(
+        scene="home", version="20260824-r001", business_date="2026-08-24",
+        revision="r001", dataset_dir="/models/training/home/run", feature_cutoff_time=123)
+    assert request.feature_cutoff_time == 123

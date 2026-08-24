@@ -107,14 +107,43 @@ class FeatureService(object):
     def load_user_feature(self):
         user_data = self._batch_load("user:*", batch_size=500)
         users = pd.DataFrame.from_dict(user_data, orient="index")
+        users = self._merge_event_features(
+            users, self._batch_load("feature:user:*", batch_size=500))
         user_feature = UserFeature(users=users)
         return user_feature
 
     def load_item_feature(self, ):
         item_data = self._batch_load("item:*", batch_size=500)
         items = pd.DataFrame.from_dict(item_data, orient="index")
+        items = self._merge_event_features(
+            items, self._batch_load("feature:item:*", batch_size=500))
         item_feature = ItemFeature(items=items)
         return item_feature
+
+    @staticmethod
+    def _merge_event_features(entities, snapshots):
+        """Overlay data-processor snapshots onto raw entity rows by entity id.
+
+        A snapshot is stored as ``{entityId, features: {...}}`` rather than as a flat entity.
+        Keep the raw profile as the left-hand side: deleted/stale snapshot keys must not recreate
+        an entity that is absent from the serving entity table.
+        """
+        if entities.empty or not snapshots:
+            return entities
+        rows = []
+        for snapshot in snapshots.values():
+            entity_id = snapshot.get("entityId")
+            features = snapshot.get("features")
+            if entity_id is None or not isinstance(features, dict):
+                continue
+            rows.append(dict(features, id=entity_id))
+        if not rows:
+            return entities
+        feature_frame = pd.DataFrame(rows).drop_duplicates("id", keep="last")
+        feature_columns = [name for name in feature_frame.columns if name != "id"]
+        # A refreshed realtime snapshot is authoritative for behavioural columns.
+        entities = entities.drop(columns=[c for c in feature_columns if c in entities.columns])
+        return entities.merge(feature_frame, how="left", on="id")
 
     def get_item_feature_by_id(self, id=""):
         with self.lock:

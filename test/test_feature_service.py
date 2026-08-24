@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 from service.feature_service import FeatureService
 
@@ -41,3 +42,34 @@ def test_refresh_only_reloads_when_snapshot_is_stale(monkeypatch):
 
     service.refresh_if_stale(0)
     assert calls == [True]
+
+
+def test_merge_event_features_overlays_snapshot_without_recreating_entities():
+    entities = pd.DataFrame([{"id": "u1", "country": "CN", "event_count": 1}])
+    snapshots = {
+        0: {"entityId": "u1", "features": {"event_count": 7, "event_click_count": 3}},
+        1: {"entityId": "deleted", "features": {"event_count": 99}},
+    }
+
+    merged = fresh_service()._merge_event_features(entities, snapshots)
+
+    assert merged.to_dict("records") == [{
+        "id": "u1", "country": "CN", "event_count": 7, "event_click_count": 3,
+    }]
+
+
+def test_load_user_feature_reads_realtime_snapshot(monkeypatch):
+    service = fresh_service()
+    values = {
+        "user:*": {0: {"id": "u1", "country": "CN"}},
+        "feature:user:*": {0: {
+            "entityId": "u1", "features": {"event_count": 4, "event_click_count": 2},
+        }},
+    }
+    monkeypatch.setattr(service, "_batch_load",
+                        lambda pattern, batch_size=500: values[pattern])
+
+    users = service.load_user_feature().users.set_index("id")
+
+    assert users.loc["u1", "event_count"] == 4
+    assert users.loc["u1", "event_click_count"] == 2

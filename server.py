@@ -187,6 +187,11 @@ def train_model(info: TrainModel):
                                    dir=str(scene_root)))
     try:
         events = pd.read_json(dataset / "events.jsonl", lines=True)
+        try:
+            feature_events = pd.read_json(dataset / "feature_events.jsonl", lines=True)
+        except pd.errors.EmptyDataError:
+            # A cold-start label window can legitimately have no strictly-prior behaviour.
+            feature_events = pd.DataFrame()
         items = pd.read_json(dataset / "items.jsonl", lines=True)
         users = pd.read_json(dataset / "users.jsonl", lines=True)
         model_type = info.model_type.strip().lower()
@@ -195,7 +200,8 @@ def train_model(info: TrainModel):
         model_class = {"lr": LRRecModel, "fm": FMRecModel}[model_type]
         model_kwargs = {"factor_dim": info.factor_dim} if model_type == "fm" else {}
         rank_model = model_class(
-            UserFeature(users, events), ItemFeature(items, events), events,
+            UserFeature(users, feature_events, as_of_time=info.feature_cutoff_time),
+            ItemFeature(items, feature_events, as_of_time=info.feature_cutoff_time), events,
             scene=info.scene, model_file=staging / model_filename,
             feature_file=staging / feature_filename, **model_kwargs)
         rank_model.train(epoch_num=info.epochs, batch_size=info.batch_size,
@@ -209,6 +215,7 @@ def train_model(info: TrainModel):
         rank_model.save()
         manifest = {"version": info.version, "scene": info.scene, "model_type": model_type,
                     "business_date": info.business_date, "revision": info.revision,
+                    "feature_cutoff_time": info.feature_cutoff_time,
                     "created_at": datetime.now(timezone.utc).isoformat(), "status": "evaluated",
                     "model": model_filename, "feature": feature_filename,
                     "metrics": {"auc": auc, "positive_rate": rank_model.dataset.positive_rate,
