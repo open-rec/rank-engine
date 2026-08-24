@@ -56,9 +56,9 @@ docker compose -f docker-compose.cluster.yml up -d --build
 curl http://127.0.0.1:8123/health
 ```
 
-The compose build uses the PyTorch 2.8 image with CUDA 12.9 and installs
-all remaining pip packages from the Alibaba Cloud mirror. A direct host install uses the same mirror
-and installs the CUDA-enabled `torch==2.10.0` package. The image
+The compose build uses the official PyTorch 2.8 runtime image with CUDA 12.9 and installs
+the remaining packages from PyPI. A direct host install also uses the configured pip index and
+installs `torch==2.10.0`. The image
 uses the sibling `rec-algorithm` directory as a BuildKit additional context, joins
 `openrec-bigdata`, reads Redis at `redis:6379`, mounts the sibling `model` repository read-only at
 `/models`, and automatically loads the default LR checkpoint. The default deployment does not
@@ -71,6 +71,14 @@ docker compose -f docker-compose.cluster.yml -f docker-compose.gpu.yml up -d --b
 
 `MODEL_DEVICE=auto` selects CUDA when available and otherwise falls back to CPU. Keep one worker
 unless each worker having its own model and feature cache is intentional.
+
+Regional registries and Python package mirrors can be selected without editing repository files:
+
+```shell
+RANK_BASE_IMAGE=registry.example.com/pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime \
+RANK_PIP_INDEX_URL=https://pypi.example.com/simple \
+docker compose -f docker-compose.cluster.yml build rank-engine
+```
 
 For a host-side `rec-server`, use:
 

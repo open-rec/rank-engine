@@ -1,11 +1,11 @@
-ARG RANK_BASE_IMAGE=mirrors-ssl.aliyuncs.com/pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
+ARG RANK_BASE_IMAGE=pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime
 FROM ${RANK_BASE_IMAGE}
 
+ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DEFAULT_TIMEOUT=300 \
-    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
-    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
     RANK_HOST=0.0.0.0 \
     RANK_PORT=8123
 

@@ -2,6 +2,9 @@ services:
   rank-engine:
     build:
       context: .
+      args:
+        RANK_BASE_IMAGE: ${RANK_BASE_IMAGE:-pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime}
+        PIP_INDEX_URL: ${RANK_PIP_INDEX_URL:-https://pypi.org/simple}
       additional_contexts:
         algorithm: ../rec-algorithm
     image: openrec/rank-engine:latest
