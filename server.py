@@ -1,6 +1,7 @@
+import hashlib
+import json
 import logging
 import os
-import json
 import re
 import shutil
 import tempfile
@@ -134,6 +135,10 @@ def _load_model(info):
         feature_file = info.feature or resolve_feature_file(info.model)
         snapshot = feature_service.prepare_all_features(
             str(feature_file) if feature_file else None)
+        declared_model_type = snapshot.get("model_type")
+        if declared_model_type and declared_model_type != model_type:
+            raise ValueError("feature space belongs to %s, not %s" % (
+                declared_model_type, model_type))
         effective_dim = snapshot["dim"] if feature_file else info.dim
         device = model_device()
         state = torch.load(info.model, map_location=device)
@@ -153,6 +158,8 @@ def _load_model(info):
             model_info = {"type": model_type, "path": info.model,
                           "feature": str(feature_file) if feature_file else None,
                           "dim": effective_dim, "device": str(device),
+                          "feature_set": snapshot.get("feature_set"),
+                          "catalog_version": snapshot.get("catalog_version"),
                           **({"factor_dim": loaded_model.factor_dim} if model_type == "fm" else {})}
     return model_info
 
@@ -199,25 +206,47 @@ def train_model(info: TrainModel):
         feature_filename = "%s.features.json" % model_type
         model_class = {"lr": LRRecModel, "fm": FMRecModel}[model_type]
         model_kwargs = {"factor_dim": info.factor_dim} if model_type == "fm" else {}
+        user_features = UserFeature(users, feature_events, as_of_time=info.feature_cutoff_time)
+        item_features = ItemFeature(items, feature_events, as_of_time=info.feature_cutoff_time)
         rank_model = model_class(
-            UserFeature(users, feature_events, as_of_time=info.feature_cutoff_time),
-            ItemFeature(items, feature_events, as_of_time=info.feature_cutoff_time), events,
+            user_features, item_features, events,
             scene=info.scene, model_file=staging / model_filename,
             feature_file=staging / feature_filename, **model_kwargs)
+        if not len(rank_model.dataset):
+            raise ValueError("rank training produced no labelled samples after entity filtering")
+        if rank_model.dataset.positive_rate in (0.0, 1.0):
+            raise ValueError("rank training requires both click and expose labels")
         rank_model.train(epoch_num=info.epochs, batch_size=info.batch_size,
                          val_ratio=info.validation_ratio)
         _, validation = rank_model._split(val_ratio=info.validation_ratio, seed=42)
         auc = rank_model.evaluate(validation, batch_size=info.batch_size)
-        if auc is None and info.min_auc > 0:
+        if auc is None:
             raise ValueError("AUC is undefined for validation data")
         if auc is not None and auc < info.min_auc:
             raise ValueError("AUC %.6f is below %.6f" % (auc, info.min_auc))
         rank_model.save()
+        # Keep the unencoded, point-in-time entity snapshots next to the checkpoint. They are the
+        # portable bootstrap representation for Redis; *.features.json remains the model-specific
+        # encoding contract and must not be confused with actual entity feature values.
+        for frame, filename in ((user_features.users, "user_feature.csv"),
+                                (item_features.items, "item_feature.csv")):
+            exported = frame.copy()
+            exported.insert(1, "as_of_time", info.feature_cutoff_time)
+            exported.to_csv(staging / filename, index=False)
+        feature_bytes = (staging / feature_filename).read_bytes()
+        feature_sha256 = hashlib.sha256(feature_bytes).hexdigest()
+        feature_space = rank_model.dataset.feature_space
         manifest = {"version": info.version, "scene": info.scene, "model_type": model_type,
                     "business_date": info.business_date, "revision": info.revision,
                     "feature_cutoff_time": info.feature_cutoff_time,
                     "created_at": datetime.now(timezone.utc).isoformat(), "status": "evaluated",
                     "model": model_filename, "feature": feature_filename,
+                    "user_feature_snapshot": "user_feature.csv",
+                    "item_feature_snapshot": "item_feature.csv",
+                    "feature_set": feature_space.feature_set,
+                    "catalog_version": feature_space.catalog_version,
+                    "feature_sha256": feature_sha256,
+                    "input_dim": rank_model.model.dim,
                     "metrics": {"auc": auc, "positive_rate": rank_model.dataset.positive_rate,
                                 "samples": len(rank_model.dataset),
                                 "feature_dim": rank_model.model.dim,

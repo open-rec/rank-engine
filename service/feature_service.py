@@ -36,13 +36,15 @@ class FeatureService(object):
 
         if user_feature.users.empty or item_feature.items.empty:
             return {"users": {}, "items": {}, "dim": 0,
-                    "feature_file": feature_file}
+                    "feature_file": feature_file, "feature_set": None,
+                    "catalog_version": None, "model_type": None}
 
         if feature_file:
             space = FeatureSpace.load(feature_file)
             user_map, item_map = space.build_maps(user_feature.users, item_feature.items)
             return {"users": user_map, "items": item_map, "dim": space.dim,
-                    "feature_file": feature_file}
+                    "feature_file": feature_file, "feature_set": space.feature_set,
+                    "catalog_version": space.catalog_version, "model_type": space.model_type}
 
         user_features = np.hstack([
             user_feature.country,
@@ -69,7 +71,8 @@ class FeatureService(object):
         }
         return {"users": user_map, "items": item_map,
                 "dim": user_features.shape[1] + item_features.shape[1],
-                "feature_file": feature_file}
+                "feature_file": feature_file, "feature_set": None,
+                "catalog_version": None, "model_type": None}
 
     def activate(self, snapshot):
         with self.lock:

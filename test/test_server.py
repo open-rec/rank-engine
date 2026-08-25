@@ -12,7 +12,8 @@ import server
 def snapshot(dim):
     return {"users": {"u1": np.array([1., 2.], dtype=np.float32)},
             "items": {"i1": np.array([3., 4.], dtype=np.float32)},
-            "dim": dim, "feature_file": "features.json"}
+            "dim": dim, "feature_file": "features.json", "feature_set": "ranking-test-v1",
+            "catalog_version": 1, "model_type": None}
 
 
 def stub_feature_snapshot(monkeypatch, value):
@@ -40,6 +41,8 @@ def test_load_model_activates_lr_and_fm_atomically(tmp_path, monkeypatch,
     assert result["type"] == model_type
     assert result["dim"] == 4
     assert result["device"] == "cpu"
+    assert result["feature_set"] == "ranking-test-v1"
+    assert result["catalog_version"] == 1
     assert activated == [prepared]
     assert server.model is not checkpoint
     assert not server.model.training
@@ -63,6 +66,20 @@ def test_failed_fm_load_keeps_previous_model_and_feature_snapshot(tmp_path, monk
 
     assert server.model is previous
     assert server.model_info == {"type": "lr", "dim": 4}
+    assert activated == []
+
+
+def test_load_rejects_feature_space_for_another_model(tmp_path, monkeypatch):
+    checkpoint = LRModel(dim=4)
+    model_file = tmp_path / "lr.pth"
+    torch.save(checkpoint.state_dict(), model_file)
+    prepared = snapshot(4)
+    prepared["model_type"] = "fm"
+    activated = stub_feature_snapshot(monkeypatch, prepared)
+
+    with pytest.raises(ValueError, match="belongs to fm"):
+        server._load_model(Model(type="lr", model=str(model_file), feature="features.json"))
+
     assert activated == []
 
 

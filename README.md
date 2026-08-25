@@ -108,6 +108,15 @@ the checkpoint, FeatureSpace sidecar, metrics, and evaluation gate to
 new release builds both its model and feature snapshot before changing the live scorer, so a failed
 load leaves the previously active version usable.
 
+The global catalog and LR/FM feature-set declarations are used only while training. A deployed
+release is self-contained: rank-engine loads its own `lr.features.json` or `fm.features.json` and
+does not consult those declarations. New manifests carry the fitted sidecar's SHA-256, input
+dimension, catalog version and feature-set name; rec-console verifies the immutable file before
+asking rank-engine to activate it. Legacy sidecars without this provenance remain loadable.
+Training refuses to create a release when entity filtering leaves no labelled samples, when labels
+contain only clicks or only exposures, or when held-out AUC is undefined; a zero threshold no longer
+allows an untrained random checkpoint through the evaluation gate.
+
 ### load a model first
 
 `/model/score` returns `MODEL_NOT_LOAD_YET` until a checkpoint is loaded — this is the step most
