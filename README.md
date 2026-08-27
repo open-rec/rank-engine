@@ -1,11 +1,11 @@
-# rank-engine
+# OpenRec Rank Engine
 
 [![CI](https://github.com/open-rec/rank-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/open-rec/rank-engine/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141.1-009688?logo=fastapi&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.10.0-EE4C2C?logo=pytorch&logoColor=white)
 
-Online ranking service for open-rec. `rec-server`'s `rank` DAG node POSTs a user plus a candidate
+Online ranking service for OpenRec. `rec-server`'s `rank` DAG node POSTs a user plus a candidate
 item list here and gets a score per item back, which it adds to the recall scores.
 
 FastAPI + PyTorch, listening on port 8123.
@@ -61,9 +61,9 @@ docker compose -f docker-compose.cluster.yml up -d --build
 curl http://127.0.0.1:8123/health
 ```
 
-The compose build uses the official PyTorch 2.8 runtime image with CUDA 12.9 and installs
-the remaining packages from PyPI. A direct host install also uses the configured pip index and
-installs `torch==2.10.0`. The image
+The compose build starts from the official PyTorch 2.8 CUDA 12.9 runtime image, then installs the
+repository requirements, including `torch==2.10.0`; 2.10.0 is therefore the application runtime
+version in both the container and a direct host install. The image
 uses the sibling `rec-algorithm` directory as a BuildKit additional context, joins
 `openrec-bigdata`, reads Redis at `redis:6379`, mounts the sibling `model` repository read-only at
 `/models`, and automatically loads the default LR checkpoint. The default deployment does not
@@ -125,13 +125,17 @@ allows an untrained random checkpoint through the evaluation gate.
 ### load a model first
 
 `/model/score` returns `MODEL_NOT_LOAD_YET` until a checkpoint is loaded — this is the step most
-easily missed:
+easily missed. From the OpenRec workspace root, use:
 
 ```shell
 curl -X POST http://127.0.0.1:8123/model/load \
   -H 'Content-Type: application/json' \
   -d '{"type": "lr", "model": "model/rank/default/lr.pth", "feature": "model/feature/default/lr.features.json"}'
 ```
+
+When running from the `rank-engine` directory, prefix both host paths with `../`. The cluster
+Compose does not use these relative paths: it mounts the model repository at `/bootstrap-models`
+and configures `/bootstrap-models/rank/default/lr.pth` plus the matching feature sidecar.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -193,7 +197,7 @@ Train a checkpoint with `rec-algorithm`, or download the Douban one:
 
 | Source | Type | Dim | Path |
 |---|---|---|---|
-| [model](https://github.com/open-rec/model) | LR | 63 | `rank/lr.pth` |
+| [model](https://github.com/open-rec/model) | LR | 63 | `model/rank/default/lr.pth` from the workspace root |
 | `rec-algorithm` `test_lr.py::test_train` | LR | depends on the dataset | `rec-algorithm/model/lr.pth` |
 
 ## configuration
