@@ -1,5 +1,10 @@
 # rank-engine
 
+[![CI](https://github.com/open-rec/rank-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/open-rec/rank-engine/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.141.1-009688?logo=fastapi&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.10.0-EE4C2C?logo=pytorch&logoColor=white)
+
 Online ranking service for open-rec. `rec-server`'s `rank` DAG node POSTs a user plus a candidate
 item list here and gets a score per item back, which it adds to the recall scores.
 
