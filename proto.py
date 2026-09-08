@@ -25,11 +25,14 @@ class TrainModel(BaseModel):
     model_type: str = Field(default="lr", pattern="^(lr|fm)$")
     factor_dim: int = Field(default=8, ge=1, le=256)
     feature_cutoff_time: int = Field(ge=0)
+    target_type: str = Field(default="item", pattern="^(item|user)$")
 
 
 class UserItems(BaseModel):
     user_id: str = Field(default="", description="user id")
     item_ids: List[str] = Field(default_factory=list, description="user score items")
+    candidate_ids: List[str] = Field(default_factory=list, description="generic score candidates")
+    target_type: str = Field(default="item", pattern="^(item|user)$")
 
 
 class ReResponse:

@@ -23,6 +23,8 @@ class ModelConfig(object):
     TYPE = os.getenv("MODEL_TYPE", "lr")
     PATH = os.getenv("MODEL_PATH")
     FEATURE_PATH = os.getenv("MODEL_FEATURE_PATH")
+    USER_PATH = os.getenv("USER_MODEL_PATH")
+    USER_FEATURE_PATH = os.getenv("USER_MODEL_FEATURE_PATH")
     DIM = _int("MODEL_DIM", 1024)
     REQUIRED = os.getenv("MODEL_REQUIRED", "false").lower() == "true"
     DEVICE = os.getenv("MODEL_DEVICE", "auto").lower()

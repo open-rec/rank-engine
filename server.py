@@ -33,6 +33,8 @@ from util.redis_util import get_redis_client
 app = FastAPI(title="OpenRec Rank Engine", version="1.0")
 model = None
 model_info = None
+user_model = None
+user_model_info = None
 model_lock = threading.RLock()
 load_lock = threading.Lock()
 feature_service = FeatureService()
@@ -101,6 +103,9 @@ def startup():
     try:
         _load_model(Model(type=Config.MODEL.TYPE, model=Config.MODEL.PATH,
                           feature=Config.MODEL.FEATURE_PATH, dim=Config.MODEL.DIM))
+        if Config.MODEL.USER_PATH:
+            _load_model(Model(type=Config.MODEL.TYPE, model=Config.MODEL.USER_PATH,
+                              feature=Config.MODEL.USER_FEATURE_PATH, dim=Config.MODEL.DIM))
     except Exception:
         logging.exception("automatic model load failed")
         if Config.MODEL.REQUIRED:
@@ -123,11 +128,12 @@ def health():
         current = model_info
     return response({"redis": redis_ok, "model_loaded": loaded,
                      "model": current, "features": feature_service.stats(),
+                     "user_model_loaded": user_model is not None, "user_model": user_model_info,
                      "ready": redis_ok and loaded})
 
 
 def _load_model(info):
-    global model, model_info
+    global model, model_info, user_model, user_model_info
     model_type = info.type.strip().lower()
     if model_type not in model_func_map:
         raise ReException(ErrorCode.INVALID_MODEL)
@@ -152,16 +158,20 @@ def _load_model(info):
         loaded_model.load_state_dict(state)
         loaded_model.to(device)
         loaded_model.eval()
-        with model_lock:
-            feature_service.activate(snapshot)
-            model = loaded_model
-            model_info = {"type": model_type, "path": info.model,
+        loaded_info = {"type": model_type, "path": info.model,
                           "feature": str(feature_file) if feature_file else None,
                           "dim": effective_dim, "device": str(device),
                           "feature_set": snapshot.get("feature_set"),
                           "catalog_version": snapshot.get("catalog_version"),
+                          "target_type": snapshot.get("target_type", "item"),
                           **({"factor_dim": loaded_model.factor_dim} if model_type == "fm" else {})}
-    return model_info
+        with model_lock:
+            feature_service.activate(snapshot)
+            if snapshot.get("target_type", "item") == "user":
+                user_model, user_model_info = loaded_model, loaded_info
+            else:
+                model, model_info = loaded_model, loaded_info
+    return loaded_info
 
 
 @app.post("/model/load")
@@ -185,10 +195,10 @@ def train_model(info: TrainModel):
     artifact_root = Path("/models/releases").resolve()
     if training_root not in dataset.parents or not re.match(r"^[A-Za-z0-9_-]+$", info.scene):
         raise ReException(ErrorCode.INVALID_MODEL)
-    target = artifact_root / info.scene / info.version
+    target = artifact_root / info.target_type / info.scene / info.version
     if target.exists():
         raise ReException(ErrorCode.LOAD_MODEL_FAILED)
-    scene_root = artifact_root / info.scene
+    scene_root = artifact_root / info.target_type / info.scene
     scene_root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".%s-" % info.version,
                                    dir=str(scene_root)))
@@ -207,11 +217,12 @@ def train_model(info: TrainModel):
         model_class = {"lr": LRRecModel, "fm": FMRecModel}[model_type]
         model_kwargs = {"factor_dim": info.factor_dim} if model_type == "fm" else {}
         user_features = UserFeature(users, feature_events, as_of_time=info.feature_cutoff_time)
-        item_features = ItemFeature(items, feature_events, as_of_time=info.feature_cutoff_time)
+        item_features = (ItemFeature(items, feature_events, as_of_time=info.feature_cutoff_time)
+                         if info.target_type == "item" else user_features)
         rank_model = model_class(
             user_features, item_features, events,
             scene=info.scene, model_file=staging / model_filename,
-            feature_file=staging / feature_filename, **model_kwargs)
+            feature_file=staging / feature_filename, target_type=info.target_type, **model_kwargs)
         if not len(rank_model.dataset):
             raise ValueError("rank training produced no labelled samples after entity filtering")
         if rank_model.dataset.positive_rate in (0.0, 1.0):
@@ -237,6 +248,7 @@ def train_model(info: TrainModel):
         feature_sha256 = hashlib.sha256(feature_bytes).hexdigest()
         feature_space = rank_model.dataset.feature_space
         manifest = {"version": info.version, "scene": info.scene, "model_type": model_type,
+                    "target_type": info.target_type,
                     "business_date": info.business_date, "revision": info.revision,
                     "feature_cutoff_time": info.feature_cutoff_time,
                     "created_at": datetime.now(timezone.utc).isoformat(), "status": "evaluated",
@@ -275,10 +287,12 @@ def refresh_features():
 
 @app.post("/clean")
 def clean():
-    global model, model_info
+    global model, model_info, user_model, user_model_info
     with model_lock:
         model = None
         model_info = None
+        user_model = None
+        user_model_info = None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return response(message="model unloaded")
@@ -287,7 +301,8 @@ def clean():
 @app.post("/model/score")
 def score(user_items: UserItems):
     with model_lock:
-        current_model = model
+        current_model = user_model if user_items.target_type == "user" else model
+        current_info = user_model_info if user_items.target_type == "user" else model_info
     if current_model is None and Config.MODEL.PATH:
         try:
             _load_model(Model(type=Config.MODEL.TYPE, model=Config.MODEL.PATH,
@@ -298,7 +313,11 @@ def score(user_items: UserItems):
             logging.exception("lazy model load failed")
     if current_model is None:
         raise ReException(ErrorCode.MODEL_NOT_LOAD_YET)
-    if not user_items.item_ids:
+    candidate_ids = user_items.candidate_ids or user_items.item_ids
+    target_type = (current_info or {}).get("target_type", "item")
+    if user_items.target_type != target_type:
+        raise ReException(ErrorCode.INVALID_MODEL)
+    if not candidate_ids:
         return response({})
     try:
         feature_service.refresh_if_stale(Config.MODEL.FEATURE_REFRESH_SECONDS)
@@ -306,8 +325,10 @@ def score(user_items: UserItems):
         batch_features = []
         item_score_map = {}
         hit_items = []
-        for item_id in user_items.item_ids:
-            item_features = feature_service.get_item_feature_by_id(item_id)
+        for item_id in candidate_ids:
+            item_features = (feature_service.get_item_feature_by_id(item_id)
+                             if target_type == "item"
+                             else feature_service.get_candidate_user_feature_by_id(item_id))
             if item_features is None:
                 item_score_map[item_id] = 0.0
                 continue

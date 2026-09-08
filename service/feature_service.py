@@ -19,6 +19,7 @@ class FeatureService(object):
     def __init__(self):
         self.user_feature_map = {}
         self.item_feature_map = {}
+        self.candidate_user_feature_map = {}
         self.feature_dim = 0
         self.feature_file = None
         self.loaded_at = 0
@@ -34,17 +35,21 @@ class FeatureService(object):
         user_feature = self.load_user_feature()
         item_feature = self.load_item_feature()
 
-        if user_feature.users.empty or item_feature.items.empty:
+        space = FeatureSpace.load(feature_file) if feature_file else None
+        target_type = space.target_type if space else "item"
+        if user_feature.users.empty or (target_type == "item" and item_feature.items.empty):
             return {"users": {}, "items": {}, "dim": 0,
                     "feature_file": feature_file, "feature_set": None,
-                    "catalog_version": None, "model_type": None}
+                    "catalog_version": None, "model_type": None,
+                    "target_type": target_type}
 
-        if feature_file:
-            space = FeatureSpace.load(feature_file)
-            user_map, item_map = space.build_maps(user_feature.users, item_feature.items)
+        if space:
+            candidates = item_feature.items if target_type == "item" else user_feature.users
+            user_map, item_map = space.build_maps(user_feature.users, candidates)
             return {"users": user_map, "items": item_map, "dim": space.dim,
                     "feature_file": feature_file, "feature_set": space.feature_set,
-                    "catalog_version": space.catalog_version, "model_type": space.model_type}
+                    "catalog_version": space.catalog_version, "model_type": space.model_type,
+                    "target_type": target_type}
 
         user_features = np.hstack([
             user_feature.country,
@@ -72,12 +77,15 @@ class FeatureService(object):
         return {"users": user_map, "items": item_map,
                 "dim": user_features.shape[1] + item_features.shape[1],
                 "feature_file": feature_file, "feature_set": None,
-                "catalog_version": None, "model_type": None}
+                "catalog_version": None, "model_type": None, "target_type": "item"}
 
     def activate(self, snapshot):
         with self.lock:
+            if snapshot.get("target_type", "item") == "user":
+                self.candidate_user_feature_map = snapshot["items"]
+            else:
+                self.item_feature_map = snapshot["items"]
             self.user_feature_map = snapshot["users"]
-            self.item_feature_map = snapshot["items"]
             self.feature_dim = snapshot["dim"]
             self.feature_file = snapshot["feature_file"]
             self.loaded_at = time.monotonic()
@@ -155,6 +163,10 @@ class FeatureService(object):
     def get_user_feature_by_id(self, id=""):
         with self.lock:
             return self.user_feature_map.get(id)
+
+    def get_candidate_user_feature_by_id(self, id=""):
+        with self.lock:
+            return self.candidate_user_feature_map.get(id)
 
     def refresh_if_stale(self, seconds):
         if seconds > 0 and time.monotonic() - self.loaded_at >= seconds:

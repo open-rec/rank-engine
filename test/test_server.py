@@ -174,6 +174,20 @@ def test_empty_item_list_does_not_touch_feature_store(monkeypatch):
     assert server.score(UserItems(user_id="u1", item_ids=[]))["data"] == {}
 
 
+def test_user_target_scores_candidate_user_features(monkeypatch):
+    scoring_model = LRModel(dim=4)
+    scoring_model.eval()
+    server.user_model = scoring_model
+    server.user_model_info = {"target_type": "user"}
+    monkeypatch.setattr(server.feature_service, "refresh_if_stale", lambda seconds: None)
+    monkeypatch.setattr(server.feature_service, "get_user_feature_by_id",
+                        lambda user_id: np.array([1., 2.], dtype=np.float32))
+    monkeypatch.setattr(server.feature_service, "get_candidate_user_feature_by_id",
+                        lambda user_id: np.array([3., 4.], dtype=np.float32))
+    result = server.score(UserItems(user_id="u1", candidate_ids=["u2"], target_type="user"))
+    assert set(result["data"]) == {"u2"}
+
+
 def test_train_request_requires_auditable_feature_cutoff():
     with pytest.raises(ValueError):
         TrainModel(scene="home", version="20260824-r001", business_date="2026-08-24",
