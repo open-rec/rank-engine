@@ -5,8 +5,8 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141.1-009688?logo=fastapi&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.10.0-EE4C2C?logo=pytorch&logoColor=white)
 
-Online ranking service for OpenRec. `rec-server`'s `rank` DAG node POSTs a user plus a candidate
-item list here and gets a score per item back, which it adds to the recall scores.
+Online ranking service for OpenRec. `rec-server`'s rank DAG nodes POST a source user plus candidate
+items or users and receive a score per candidate, which is fused with recall scores.
 
 FastAPI + PyTorch, listening on port 8123.
 
@@ -106,8 +106,8 @@ If `rec-server` also runs in the `openrec-bigdata` Docker network, use `rank.hos
 | GET | `/health` | liveness |
 | POST | `/model/load` | load a checkpoint into memory |
 | POST | `/model/train` | train and evaluate one immutable release from Spark-prepared JSONL |
-| POST | `/model/score` | score items for a user |
-| POST | `/model/refresh-features` | rebuild the Redis-backed feature cache |
+| POST | `/model/score` | score candidate items or users for a source user |
+| POST | `/model/refresh-features` | rebuild the Redis-backed `item` and `user` feature caches |
 | POST | `/clean` | drop the loaded model and free CUDA cache |
 | GET | `/` | static `index.html` |
 
