@@ -50,7 +50,11 @@ All settings can be supplied through environment variables; local defaults still
 Features are loaded when a model is loaded, not while the Python module is imported. Redis is read
 with incremental `SCAN` calls rather than the blocking `KEYS` command. The cache refreshes every
 `FEATURE_REFRESH_SECONDS` (300 by default), and `/model/refresh-features` can force an immediate
-refresh. If automatic loading starts before Redis has data, the first score request retries it.
+refresh. Item and User rank use independent `item` and `user` feature namespaces; each namespace
+owns its source-user vectors, candidate vectors, FeatureSpace, dimension, and refresh timestamp, so
+loading or refreshing one model cannot change the other's encoding. `/health` reports both under
+`features.item` and `features.user`. If automatic loading starts before Redis has data, the first
+score request retries it.
 
 ## cluster mode
 

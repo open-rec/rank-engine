@@ -236,11 +236,13 @@ def train_model(info: TrainModel):
         if auc is not None and auc < info.min_auc:
             raise ValueError("AUC %.6f is below %.6f" % (auc, info.min_auc))
         rank_model.save()
-        # Keep the unencoded, point-in-time entity snapshots next to the checkpoint. They are the
-        # portable bootstrap representation for Redis; *.features.json remains the model-specific
-        # encoding contract and must not be confused with actual entity feature values.
+        # Keep the unencoded entity snapshots next to the checkpoint. They are the portable
+        # bootstrap representation for Redis; *.features.json remains the model-specific encoding
+        # contract and must not be confused with actual entity feature values.
+        candidate_features = (item_features.items if info.target_type == "item"
+                              else item_features.users)
         for frame, filename in ((user_features.users, "user_feature.csv"),
-                                (item_features.items, "item_feature.csv")):
+                                (candidate_features, "item_feature.csv")):
             exported = frame.copy()
             exported.insert(1, "as_of_time", info.feature_cutoff_time)
             exported.to_csv(staging / filename, index=False)
@@ -320,8 +322,10 @@ def score(user_items: UserItems):
     if not candidate_ids:
         return response({})
     try:
-        feature_service.refresh_if_stale(Config.MODEL.FEATURE_REFRESH_SECONDS)
-        user_features = feature_service.get_user_feature_by_id(user_items.user_id)
+        feature_service.refresh_if_stale(Config.MODEL.FEATURE_REFRESH_SECONDS,
+                                         namespace=target_type)
+        user_features = feature_service.get_user_feature_by_id(
+            user_items.user_id, namespace=target_type)
         batch_features = []
         item_score_map = {}
         hit_items = []

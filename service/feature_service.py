@@ -16,22 +16,32 @@ from util.redis_util import get_redis_client
 @singleton
 class FeatureService(object):
 
+    NAMESPACES = ("item", "user")
+
     def __init__(self):
-        self.user_feature_map = {}
-        self.item_feature_map = {}
-        self.candidate_user_feature_map = {}
-        self.feature_dim = 0
-        self.feature_file = None
-        self.loaded_at = 0
+        self.namespaces = {name: self._empty_snapshot(name) for name in self.NAMESPACES}
         self.lock = threading.RLock()
 
-    def load_all_features(self, feature_file=None):
-        snapshot = self.prepare_all_features(feature_file)
-        self.activate(snapshot)
+    @staticmethod
+    def _empty_snapshot(namespace):
+        return {"users": {}, "items": {}, "dim": 0, "feature_file": None,
+                "feature_set": None, "catalog_version": None, "model_type": None,
+                "target_type": namespace, "loaded_at": 0}
+
+    def load_all_features(self, feature_file=None, namespace=None):
+        if feature_file:
+            snapshot = self.prepare_all_features(feature_file)
+            self.activate(snapshot)
+            return
+        namespaces = [namespace] if namespace else list(self.NAMESPACES)
+        for name in namespaces:
+            with self.lock:
+                active_file = self.namespaces[name]["feature_file"]
+            if active_file:
+                self.activate(self.prepare_all_features(active_file))
 
     def prepare_all_features(self, feature_file=None):
         """Build a feature snapshot without changing the live scorer."""
-        feature_file = feature_file or self.feature_file
         user_feature = self.load_user_feature()
         item_feature = self.load_item_feature()
 
@@ -80,15 +90,13 @@ class FeatureService(object):
                 "catalog_version": None, "model_type": None, "target_type": "item"}
 
     def activate(self, snapshot):
+        namespace = snapshot.get("target_type", "item")
+        if namespace not in self.NAMESPACES:
+            raise ValueError("unsupported feature namespace: %s" % namespace)
         with self.lock:
-            if snapshot.get("target_type", "item") == "user":
-                self.candidate_user_feature_map = snapshot["items"]
-            else:
-                self.item_feature_map = snapshot["items"]
-            self.user_feature_map = snapshot["users"]
-            self.feature_dim = snapshot["dim"]
-            self.feature_file = snapshot["feature_file"]
-            self.loaded_at = time.monotonic()
+            activated = dict(snapshot)
+            activated["loaded_at"] = time.monotonic()
+            self.namespaces[namespace] = activated
 
     @staticmethod
     def _batch_load(key_pattern="*", batch_size=500):
@@ -158,21 +166,26 @@ class FeatureService(object):
 
     def get_item_feature_by_id(self, id=""):
         with self.lock:
-            return self.item_feature_map.get(id)
+            return self.namespaces["item"]["items"].get(id)
 
-    def get_user_feature_by_id(self, id=""):
+    def get_user_feature_by_id(self, id="", namespace="item"):
         with self.lock:
-            return self.user_feature_map.get(id)
+            return self.namespaces[namespace]["users"].get(id)
 
     def get_candidate_user_feature_by_id(self, id=""):
         with self.lock:
-            return self.candidate_user_feature_map.get(id)
+            return self.namespaces["user"]["items"].get(id)
 
-    def refresh_if_stale(self, seconds):
-        if seconds > 0 and time.monotonic() - self.loaded_at >= seconds:
-            self.load_all_features()
+    def refresh_if_stale(self, seconds, namespace="item"):
+        with self.lock:
+            loaded_at = self.namespaces[namespace]["loaded_at"]
+        if seconds > 0 and loaded_at and time.monotonic() - loaded_at >= seconds:
+            self.load_all_features(namespace=namespace)
 
     def stats(self):
         with self.lock:
-            return {"users": len(self.user_feature_map), "items": len(self.item_feature_map),
-                    "dim": self.feature_dim}
+            return {name: {"users": len(snapshot["users"]),
+                           "candidates": len(snapshot["items"]),
+                           "dim": snapshot["dim"],
+                           "feature_file": snapshot["feature_file"]}
+                    for name, snapshot in self.namespaces.items()}

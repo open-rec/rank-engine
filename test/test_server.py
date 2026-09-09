@@ -111,8 +111,10 @@ def test_load_endpoint_maps_missing_checkpoint_to_model_not_found(monkeypatch):
 
 
 def configure_scoring_features(monkeypatch, user, items):
-    monkeypatch.setattr(server.feature_service, "refresh_if_stale", lambda seconds: None)
-    monkeypatch.setattr(server.feature_service, "get_user_feature_by_id", lambda user_id: user)
+    monkeypatch.setattr(server.feature_service, "refresh_if_stale",
+                        lambda seconds, namespace="item": None)
+    monkeypatch.setattr(server.feature_service, "get_user_feature_by_id",
+                        lambda user_id, namespace="item": user)
     monkeypatch.setattr(server.feature_service, "get_item_feature_by_id", items.get)
 
 
@@ -170,7 +172,7 @@ def test_empty_item_list_does_not_touch_feature_store(monkeypatch):
     server.model = LRModel(dim=4)
     monkeypatch.setattr(
         server.feature_service, "refresh_if_stale",
-        lambda seconds: pytest.fail("feature store should not be touched"))
+        lambda seconds, namespace="item": pytest.fail("feature store should not be touched"))
     assert server.score(UserItems(user_id="u1", item_ids=[]))["data"] == {}
 
 
@@ -179,13 +181,17 @@ def test_user_target_scores_candidate_user_features(monkeypatch):
     scoring_model.eval()
     server.user_model = scoring_model
     server.user_model_info = {"target_type": "user"}
-    monkeypatch.setattr(server.feature_service, "refresh_if_stale", lambda seconds: None)
+    namespaces = []
+    monkeypatch.setattr(server.feature_service, "refresh_if_stale",
+                        lambda seconds, namespace="item": namespaces.append(namespace))
     monkeypatch.setattr(server.feature_service, "get_user_feature_by_id",
-                        lambda user_id: np.array([1., 2.], dtype=np.float32))
+                        lambda user_id, namespace="item": np.array(
+                            [1., 2.], dtype=np.float32) if namespace == "user" else None)
     monkeypatch.setattr(server.feature_service, "get_candidate_user_feature_by_id",
                         lambda user_id: np.array([3., 4.], dtype=np.float32))
     result = server.score(UserItems(user_id="u1", candidate_ids=["u2"], target_type="user"))
     assert set(result["data"]) == {"u2"}
+    assert namespaces == ["user"]
 
 
 def test_train_request_requires_auditable_feature_cutoff():
