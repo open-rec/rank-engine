@@ -113,7 +113,7 @@ If `rec-server` also runs in the `openrec-bigdata` Docker network, use `rank.hos
 
 In cluster mode `/model/train` is internal. It accepts a dataset below `/models/training`, writes
 the checkpoint, FeatureSpace sidecar, metrics, and evaluation gate to
-`/models/releases/{scene}/{version}`, then atomically exposes that immutable directory. Loading a
+`/models/releases/{target_type}/{scene}/{version}`, then atomically exposes that immutable directory. Loading a
 new release builds both its model and feature snapshot before changing the live scorer, so a failed
 load leaves the previously active version usable.
 
@@ -134,7 +134,7 @@ easily missed. From the OpenRec workspace root, use:
 ```shell
 curl -X POST http://127.0.0.1:8123/model/load \
   -H 'Content-Type: application/json' \
-  -d '{"type": "lr", "model": "model/rank/item/lr.pth", "feature": "model/feature/item/lr.features.json"}'
+  -d '{"type": "lr", "model": "model/rank/item/lr.pth", "feature": "model/rank/item/lr.features.json"}'
 ```
 
 When running from the `rank-engine` directory, prefix both host paths with `../`. The cluster

@@ -15,9 +15,9 @@ services:
       REDIS_PORT: 6379
       MODEL_TYPE: lr
       MODEL_PATH: /bootstrap-models/rank/item/lr.pth
-      MODEL_FEATURE_PATH: /bootstrap-models/feature/item/lr.features.json
+      MODEL_FEATURE_PATH: /bootstrap-models/rank/item/lr.features.json
       USER_MODEL_PATH: /bootstrap-models/rank/user/lr.pth
-      USER_MODEL_FEATURE_PATH: /bootstrap-models/feature/user/lr.features.json
+      USER_MODEL_FEATURE_PATH: /bootstrap-models/rank/user/lr.features.json
       MODEL_REQUIRED: "false"
       MODEL_DEVICE: auto
       FEATURE_REFRESH_SECONDS: 300
