@@ -8,6 +8,7 @@ import pandas as pd
 from algorithm.feature.item_feature import ItemFeature
 from algorithm.feature.user_feature import UserFeature
 from algorithm.feature.feature_space import FeatureSpace
+from algorithm.feature.feature_catalog import FeatureCatalog
 
 from sugar import singleton
 from util.redis_util import get_redis_client
@@ -25,7 +26,8 @@ class FeatureService(object):
     @staticmethod
     def _empty_snapshot(namespace):
         return {"users": {}, "items": {}, "dim": 0, "feature_file": None,
-                "feature_set": None, "catalog_version": None, "model_type": None,
+                "feature_set": None, "catalog_version": None, "catalog_sha256": None,
+                "model_type": None,
                 "target_type": namespace, "loaded_at": 0}
 
     def load_all_features(self, feature_file=None, namespace=None):
@@ -50,7 +52,7 @@ class FeatureService(object):
         if user_feature.users.empty or (target_type == "item" and item_feature.items.empty):
             return {"users": {}, "items": {}, "dim": 0,
                     "feature_file": feature_file, "feature_set": None,
-                    "catalog_version": None, "model_type": None,
+                    "catalog_version": None, "catalog_sha256": None, "model_type": None,
                     "target_type": target_type}
 
         if space:
@@ -58,7 +60,8 @@ class FeatureService(object):
             user_map, item_map = space.build_maps(user_feature.users, candidates)
             return {"users": user_map, "items": item_map, "dim": space.dim,
                     "feature_file": feature_file, "feature_set": space.feature_set,
-                    "catalog_version": space.catalog_version, "model_type": space.model_type,
+                    "catalog_version": space.catalog_version,
+                    "catalog_sha256": space.catalog_sha256, "model_type": space.model_type,
                     "target_type": target_type}
 
         user_features = np.hstack([
@@ -150,7 +153,13 @@ class FeatureService(object):
         if entities.empty or not snapshots:
             return entities
         rows = []
+        catalog = FeatureCatalog.load()
         for snapshot in snapshots.values():
+            snapshot_sha = snapshot.get("catalogSha256")
+            snapshot_version = snapshot.get("catalogVersion")
+            if snapshot_sha and (snapshot_sha != catalog.sha256 or
+                                 int(snapshot_version) != catalog.version):
+                raise ValueError("realtime snapshot uses a different feature catalog")
             entity_id = snapshot.get("entityId")
             features = snapshot.get("features")
             if entity_id is None or not isinstance(features, dict):

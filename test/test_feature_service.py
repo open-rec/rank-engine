@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from service.feature_service import FeatureService
 
@@ -71,6 +72,14 @@ def test_merge_event_features_overlays_snapshot_without_recreating_entities():
     assert merged.to_dict("records") == [{
         "id": "u1", "country": "CN", "event_count": 7, "event_click_count": 3,
     }]
+
+
+def test_merge_rejects_realtime_snapshot_from_another_catalog():
+    entities = pd.DataFrame([{"id": "u1"}])
+    snapshots = {0: {"entityId": "u1", "catalogVersion": 1,
+                     "catalogSha256": "different", "features": {"event_count": 1}}}
+    with pytest.raises(ValueError, match="different feature catalog"):
+        fresh_service()._merge_event_features(entities, snapshots)
 
 
 def test_load_user_feature_reads_realtime_snapshot(monkeypatch):

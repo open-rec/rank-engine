@@ -163,6 +163,7 @@ def _load_model(info):
                           "dim": effective_dim, "device": str(device),
                           "feature_set": snapshot.get("feature_set"),
                           "catalog_version": snapshot.get("catalog_version"),
+                          "catalog_sha256": snapshot.get("catalog_sha256"),
                           "target_type": snapshot.get("target_type", "item"),
                           **({"factor_dim": loaded_model.factor_dim} if model_type == "fm" else {})}
         with model_lock:
@@ -259,6 +260,7 @@ def train_model(info: TrainModel):
                     "item_feature_snapshot": "item_feature.csv",
                     "feature_set": feature_space.feature_set,
                     "catalog_version": feature_space.catalog_version,
+                    "catalog_sha256": feature_space.catalog_sha256,
                     "feature_sha256": feature_sha256,
                     "input_dim": rank_model.model.dim,
                     "metrics": {"auc": auc, "positive_rate": rank_model.dataset.positive_rate,
