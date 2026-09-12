@@ -205,21 +205,29 @@ def train_model(info: TrainModel):
     staging = Path(tempfile.mkdtemp(prefix=".%s-" % info.version,
                                    dir=str(scene_root)))
     try:
-        events = pd.read_json(dataset / "events.jsonl", lines=True)
-        try:
-            feature_events = pd.read_json(dataset / "feature_events.jsonl", lines=True)
-        except pd.errors.EmptyDataError:
-            # A cold-start label window can legitimately have no strictly-prior behaviour.
-            feature_events = pd.DataFrame()
-        items = pd.read_json(dataset / "items.jsonl", lines=True)
-        users = pd.read_json(dataset / "users.jsonl", lines=True)
+        def read_records(path):
+            files = sorted(path.glob("part-*.json")) if path.is_dir() else [path]
+            frames = [pd.read_json(value, lines=True) for value in files if value.stat().st_size]
+            return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+        events = read_records(dataset / "events.jsonl")
         model_type = info.model_type.strip().lower()
         model_filename = "%s.pth" % model_type
         feature_filename = "%s.features.json" % model_type
         model_class = {"lr": LRRecModel, "fm": FMRecModel}[model_type]
         model_kwargs = {"factor_dim": info.factor_dim} if model_type == "fm" else {}
-        events, sample_users, sample_items = materialize_point_in_time_samples(
-            events, feature_events, users, items, info.target_type)
+        if (dataset / "sample_users.jsonl").exists():
+            sample_users = read_records(dataset / "sample_users.jsonl")
+            sample_items = read_records(dataset / "sample_items.jsonl")
+            order = events["_sample_id"].tolist()
+            sample_users = sample_users.set_index("_sample_id").loc[order].reset_index()
+            sample_items = sample_items.set_index("_sample_id").loc[order].reset_index()
+        else:
+            feature_events = read_records(dataset / "feature_events.jsonl")
+            items = read_records(dataset / "items.jsonl")
+            users = read_records(dataset / "users.jsonl")
+            events, sample_users, sample_items = materialize_point_in_time_samples(
+                events, feature_events, users, items, info.target_type)
         if events.empty:
             raise ValueError("rank training has no entities active at their label times")
         latest_users = sample_users.drop_duplicates("id", keep="last")
@@ -231,14 +239,15 @@ def train_model(info: TrainModel):
             user_features, item_features, events,
             scene=info.scene, model_file=staging / model_filename,
             feature_file=staging / feature_filename, target_type=info.target_type,
-            sample_users=sample_users, sample_items=sample_items, **model_kwargs)
+            sample_users=sample_users, sample_items=sample_items,
+            validation_ratio=info.validation_ratio, **model_kwargs)
         if not len(rank_model.dataset):
             raise ValueError("rank training produced no labelled samples after entity filtering")
         if rank_model.dataset.positive_rate in (0.0, 1.0):
             raise ValueError("rank training requires both click and expose labels")
+        training, validation = rank_model._split(val_ratio=info.validation_ratio, seed=42)
         rank_model.train(epoch_num=info.epochs, batch_size=info.batch_size,
                          val_ratio=info.validation_ratio)
-        _, validation = rank_model._split(val_ratio=info.validation_ratio, seed=42)
         auc = rank_model.evaluate(validation, batch_size=info.batch_size)
         if auc is None:
             raise ValueError("AUC is undefined for validation data")
@@ -262,6 +271,7 @@ def train_model(info: TrainModel):
         manifest = {"version": info.version, "scene": info.scene, "model_type": model_type,
                     "target_type": info.target_type,
                     "business_date": info.business_date, "revision": info.revision,
+                    "label_observation_cutoff": info.label_observation_cutoff,
                     "feature_cutoff_time": info.feature_cutoff_time,
                     "feature_until_time": info.feature_until_time or info.feature_cutoff_time,
                     "feature_join": "per_sample_point_in_time",
@@ -276,6 +286,15 @@ def train_model(info: TrainModel):
                     "input_dim": rank_model.model.dim,
                     "metrics": {"auc": auc, "positive_rate": rank_model.dataset.positive_rate,
                                 "samples": len(rank_model.dataset),
+                                "input_labels": info.input_label_count,
+                                "spark_materialized_labels": info.materialized_label_count,
+                                "dropped_labels": info.input_label_count - len(rank_model.dataset),
+                                "history_rows": info.history_row_count,
+                                "materialization_seconds": info.materialization_seconds,
+                                "training_samples": len(training),
+                                "validation_samples": len(validation),
+                                "label_time_min": int(events["time"].min()),
+                                "label_time_max": int(events["time"].max()),
                                 "feature_dim": rank_model.model.dim,
                                 **({"factor_dim": rank_model.model.factor_dim}
                                    if model_type == "fm" else {})},

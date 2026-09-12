@@ -201,5 +201,6 @@ def test_train_request_requires_auditable_feature_cutoff():
 
     request = TrainModel(
         scene="home", version="20260824-r001", business_date="2026-08-24",
-        revision="r001", dataset_dir="/models/training/home/run", feature_cutoff_time=123)
+        revision="r001", dataset_dir="/models/training/home/run", feature_cutoff_time=123,
+        label_observation_cutoff=456, input_label_count=10)
     assert request.feature_cutoff_time == 123
