@@ -25,6 +25,7 @@ class TrainModel(BaseModel):
     model_type: str = Field(default="lr", pattern="^(lr|fm)$")
     factor_dim: int = Field(default=8, ge=1, le=256)
     feature_cutoff_time: int = Field(ge=0)
+    feature_until_time: Optional[int] = Field(default=None, ge=0)
     target_type: str = Field(default="item", pattern="^(item|user)$")
 
 

@@ -23,6 +23,7 @@ from config import Config
 from error_code import ErrorCode, ReException
 from model import model_func_map
 from algorithm.feature.item_feature import ItemFeature
+from algorithm.feature.point_in_time import materialize_point_in_time_samples
 from algorithm.feature.user_feature import UserFeature
 from algorithm.rank.lr import LRRecModel
 from algorithm.rank.fm import FMRecModel
@@ -217,13 +218,20 @@ def train_model(info: TrainModel):
         feature_filename = "%s.features.json" % model_type
         model_class = {"lr": LRRecModel, "fm": FMRecModel}[model_type]
         model_kwargs = {"factor_dim": info.factor_dim} if model_type == "fm" else {}
-        user_features = UserFeature(users, feature_events, as_of_time=info.feature_cutoff_time)
-        item_features = (ItemFeature(items, feature_events, as_of_time=info.feature_cutoff_time)
-                         if info.target_type == "item" else user_features)
+        events, sample_users, sample_items = materialize_point_in_time_samples(
+            events, feature_events, users, items, info.target_type)
+        if events.empty:
+            raise ValueError("rank training has no entities active at their label times")
+        latest_users = sample_users.drop_duplicates("id", keep="last")
+        latest_items = sample_items.drop_duplicates("id", keep="last")
+        user_features = UserFeature(latest_users)
+        item_features = (ItemFeature(latest_items) if info.target_type == "item"
+                         else UserFeature(latest_items))
         rank_model = model_class(
             user_features, item_features, events,
             scene=info.scene, model_file=staging / model_filename,
-            feature_file=staging / feature_filename, target_type=info.target_type, **model_kwargs)
+            feature_file=staging / feature_filename, target_type=info.target_type,
+            sample_users=sample_users, sample_items=sample_items, **model_kwargs)
         if not len(rank_model.dataset):
             raise ValueError("rank training produced no labelled samples after entity filtering")
         if rank_model.dataset.positive_rate in (0.0, 1.0):
@@ -245,7 +253,8 @@ def train_model(info: TrainModel):
         for frame, filename in ((user_features.users, "user_feature.csv"),
                                 (candidate_features, "item_feature.csv")):
             exported = frame.copy()
-            exported.insert(1, "as_of_time", info.feature_cutoff_time)
+            exported.insert(1, "as_of_time",
+                            info.feature_until_time or info.feature_cutoff_time)
             exported.to_csv(staging / filename, index=False)
         feature_bytes = (staging / feature_filename).read_bytes()
         feature_sha256 = hashlib.sha256(feature_bytes).hexdigest()
@@ -254,6 +263,8 @@ def train_model(info: TrainModel):
                     "target_type": info.target_type,
                     "business_date": info.business_date, "revision": info.revision,
                     "feature_cutoff_time": info.feature_cutoff_time,
+                    "feature_until_time": info.feature_until_time or info.feature_cutoff_time,
+                    "feature_join": "per_sample_point_in_time",
                     "created_at": datetime.now(timezone.utc).isoformat(), "status": "evaluated",
                     "model": model_filename, "feature": feature_filename,
                     "user_feature_snapshot": "user_feature.csv",
