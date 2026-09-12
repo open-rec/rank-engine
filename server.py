@@ -44,6 +44,40 @@ request_latency = Histogram("openrec_rank_request_latency_seconds", "Rank Engine
 model_loaded = Gauge("openrec_rank_model_loaded", "Whether a ranking model is loaded")
 
 
+def _align_materialized_rows(events, sample_users, sample_items):
+    """Validate and align Spark materialized rows by immutable sample identity."""
+    frames = (("events", events), ("sample_users", sample_users),
+              ("sample_items", sample_items))
+    for name, frame in frames:
+        if "_sample_id" not in frame.columns:
+            raise ValueError("%s is missing _sample_id" % name)
+        if frame["_sample_id"].isna().any() or frame["_sample_id"].duplicated().any():
+            raise ValueError("%s contains null or duplicate _sample_id" % name)
+    expected = set(events["_sample_id"])
+    if set(sample_users["_sample_id"]) != expected or set(sample_items["_sample_id"]) != expected:
+        raise ValueError("materialized feature rows do not match event sample identities")
+    order = events["_sample_id"].tolist()
+    return (sample_users.set_index("_sample_id").loc[order].reset_index(),
+            sample_items.set_index("_sample_id").loc[order].reset_index())
+
+
+def _latest_feature_rows(events, rows):
+    """Select latest per-entity PIT rows independently of Spark part-file order."""
+    if "_sample_id" in events.columns and "_sample_id" in rows.columns:
+        timeline = events[["_sample_id", "time"]].rename(columns={"time": "_label_time"})
+        ordered = rows.merge(timeline, on="_sample_id", validate="one_to_one")
+    else:
+        if len(events) != len(rows):
+            raise ValueError("feature rows are not aligned with label events")
+        ordered = rows.copy()
+        ordered["_label_time"] = events["time"].tolist()
+    ordered["_sample_order"] = range(len(ordered))
+    ordered = ordered.sort_values(["_label_time", "_sample_order"], kind="mergesort")
+    return ordered.drop_duplicates("id", keep="last").drop(
+        columns=["_sample_id", "_label_time", "_sample_order"],
+        errors="ignore").reset_index(drop=True)
+
+
 @app.middleware("http")
 async def observe_request(request: Request, call_next):
     if request.url.path == "/metrics":
@@ -219,9 +253,8 @@ def train_model(info: TrainModel):
         if (dataset / "sample_users.jsonl").exists():
             sample_users = read_records(dataset / "sample_users.jsonl")
             sample_items = read_records(dataset / "sample_items.jsonl")
-            order = events["_sample_id"].tolist()
-            sample_users = sample_users.set_index("_sample_id").loc[order].reset_index()
-            sample_items = sample_items.set_index("_sample_id").loc[order].reset_index()
+            sample_users, sample_items = _align_materialized_rows(
+                events, sample_users, sample_items)
         else:
             feature_events = read_records(dataset / "feature_events.jsonl")
             items = read_records(dataset / "items.jsonl")
@@ -230,8 +263,8 @@ def train_model(info: TrainModel):
                 events, feature_events, users, items, info.target_type)
         if events.empty:
             raise ValueError("rank training has no entities active at their label times")
-        latest_users = sample_users.drop_duplicates("id", keep="last")
-        latest_items = sample_items.drop_duplicates("id", keep="last")
+        latest_users = _latest_feature_rows(events, sample_users)
+        latest_items = _latest_feature_rows(events, sample_items)
         user_features = UserFeature(latest_users)
         item_features = (ItemFeature(latest_items) if info.target_type == "item"
                          else UserFeature(latest_items))
@@ -287,8 +320,12 @@ def train_model(info: TrainModel):
                     "metrics": {"auc": auc, "positive_rate": rank_model.dataset.positive_rate,
                                 "samples": len(rank_model.dataset),
                                 "input_labels": info.input_label_count,
+                                "constructed_labels": info.constructed_label_count,
                                 "spark_materialized_labels": info.materialized_label_count,
-                                "dropped_labels": info.input_label_count - len(rank_model.dataset),
+                                "dropped_labels": ((info.constructed_label_count
+                                                    if info.constructed_label_count is not None
+                                                    else info.input_label_count)
+                                                   - len(rank_model.dataset)),
                                 "history_rows": info.history_row_count,
                                 "materialization_seconds": info.materialization_seconds,
                                 "training_samples": len(training),

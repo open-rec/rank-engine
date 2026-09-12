@@ -26,6 +26,7 @@ class TrainModel(BaseModel):
     factor_dim: int = Field(default=8, ge=1, le=256)
     label_observation_cutoff: int = Field(ge=0)
     input_label_count: int = Field(ge=0)
+    constructed_label_count: Optional[int] = Field(default=None, ge=0)
     materialized_label_count: Optional[int] = Field(default=None, ge=0)
     history_row_count: Optional[int] = Field(default=None, ge=0)
     materialization_seconds: Optional[float] = Field(default=None, ge=0)
