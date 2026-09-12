@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+import re
 
 import numpy as np
 import pandas as pd
@@ -164,6 +165,21 @@ class FeatureService(object):
             features = snapshot.get("features")
             if entity_id is None or not isinstance(features, dict):
                 continue
+            # Window and recency values are time-dependent. Re-materialize them when rank-engine
+            # refreshes its serving snapshot instead of freezing them at the last arriving event.
+            features = dict(features)
+            now = int(time.time())
+            last_time = int(features.get("event_last_time", 0) or 0)
+            if "event_recency_seconds" in features:
+                features["event_recency_seconds"] = max(0, now - last_time) if last_time else 0
+            histogram = snapshot.get("recentEventTimeCounts") or {}
+            for name in list(features):
+                match = re.match(r"^event_count_(\d+)d$", name)
+                if not match or not histogram:
+                    continue
+                boundary = now - int(match.group(1)) * 86400
+                features[name] = sum(int(count) for event_time, count in histogram.items()
+                                     if int(event_time) >= boundary)
             rows.append(dict(features, id=entity_id))
         if not rows:
             return entities

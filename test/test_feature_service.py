@@ -74,6 +74,21 @@ def test_merge_event_features_overlays_snapshot_without_recreating_entities():
     }]
 
 
+def test_merge_rematerializes_time_dependent_features(monkeypatch):
+    monkeypatch.setattr("service.feature_service.time.time", lambda: 200000.)
+    entities = pd.DataFrame([{"id": "u1"}])
+    snapshots = {0: {"entityId": "u1", "features": {
+        "event_last_time": 100000, "event_recency_seconds": 0,
+        "event_count_1d": 2, "event_count_7d": 2,
+    }, "recentEventTimeCounts": {"100000": 1, "190000": 1}}}
+
+    merged = fresh_service()._merge_event_features(entities, snapshots).iloc[0]
+
+    assert merged.event_recency_seconds == 100000
+    assert merged.event_count_1d == 1
+    assert merged.event_count_7d == 2
+
+
 def test_merge_rejects_realtime_snapshot_from_another_catalog():
     entities = pd.DataFrame([{"id": "u1"}])
     snapshots = {0: {"entityId": "u1", "catalogVersion": 1,
