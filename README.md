@@ -127,10 +127,15 @@ contain only clicks or only exposures, or when held-out AUC is undefined; a zero
 allows an untrained random checkpoint through the evaluation gate.
 
 Spark now supplies aligned `events.jsonl`, `sample_users.jsonl`, and `sample_items.jsonl`
-directories. The request must include the immutable `label_observation_cutoff`, input/materialized
-counts, feature time bounds, history row count, and materialization duration. Rank-engine fits the
-FeatureSpace only on the training time slice and records those boundaries and counts in the release
-manifest; it retains the legacy raw-history reader only for backward-compatible local datasets.
+directories. Every directory must contain the same unique, non-null `_sample_id` population;
+rank-engine rejects incomplete or duplicate materialized rows and aligns them by that identity
+instead of Spark part-file order. The request includes the immutable `label_observation_cutoff`,
+source/constructed/materialized counts, feature time bounds, history row count, and materialization
+duration. `dropped_labels` is measured from constructed labels so item and generated U2U samples
+share a meaningful metric. Rank-engine fits the FeatureSpace only on the training time slice and
+records those boundaries and counts in the release manifest. The exported Redis bootstrap snapshot
+selects each entity's row at its latest label time, also independently of part-file order. The
+legacy raw-history reader remains only for backward-compatible local datasets.
 
 ### load a model first
 
