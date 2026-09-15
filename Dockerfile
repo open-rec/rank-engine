@@ -19,6 +19,6 @@ RUN chmod +x start.sh
 
 EXPOSE 8123
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8123/health')); assert d['code']==0"
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8123/health', timeout=3)"
 
 ENTRYPOINT ["./start.sh"]

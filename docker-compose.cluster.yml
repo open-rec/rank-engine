@@ -19,6 +19,7 @@ services:
       USER_MODEL_PATH: /bootstrap-models/rank/user/lr.pth
       USER_MODEL_FEATURE_PATH: /bootstrap-models/rank/user/lr.features.json
       MODEL_REQUIRED: "false"
+      MODEL_STATE_DIR: /models/active
       MODEL_DEVICE: auto
       FEATURE_REFRESH_SECONDS: 300
       RANK_WORKERS: 1

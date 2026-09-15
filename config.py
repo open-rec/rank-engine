@@ -20,6 +20,8 @@ class ServerConfig(object):
 
 
 class ModelConfig(object):
+    ROOT = os.getenv("MODEL_ROOT", "/models")
+    STATE_DIR = os.getenv("MODEL_STATE_DIR", os.path.join(ROOT, "active"))
     TYPE = os.getenv("MODEL_TYPE", "lr")
     PATH = os.getenv("MODEL_PATH")
     FEATURE_PATH = os.getenv("MODEL_FEATURE_PATH")

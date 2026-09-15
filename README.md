@@ -103,7 +103,8 @@ If `rec-server` also runs in the `openrec-bigdata` Docker network, use `rank.hos
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | liveness |
+| GET | `/health` | readiness; HTTP 503 until Redis and required model feature snapshots are usable |
+| GET | `/metrics` | HTTP and business-error counters, latency, and per-target model state |
 | POST | `/model/load` | load a checkpoint into memory |
 | POST | `/model/train` | train and evaluate one immutable release from Spark-prepared JSONL |
 | POST | `/model/score` | score candidate items or users for a source user |
@@ -116,6 +117,30 @@ the checkpoint, FeatureSpace sidecar, metrics, and evaluation gate to
 `/models/releases/{target_type}/{scene}/{version}`, then atomically exposes that immutable directory. Loading a
 new release builds both its model and feature snapshot before changing the live scorer, so a failed
 load leaves the previously active version usable.
+
+Every successful `/model/load` also atomically saves its load configuration to
+`MODEL_STATE_DIR/{item,user}.json` before activating the model. The cluster default is
+`/models/active` on the existing persistent model-artifact volume. Startup and lazy recovery restore
+these records before considering bootstrap environment paths, including FM model type and factor
+dimension. If a saved release is missing, corrupt, or cannot load, that target remains unavailable
+and retries on its next score request; it never silently falls back to the bootstrap checkpoint.
+Item and user recovery run independently. `/clean` unloads memory but retains the saved release,
+which is restored on the next request or restart. Keep one worker for model lifecycle operations.
+
+When upgrading an existing installation, re-publish its intended active versions through
+rec-console once after deploying this change to create the recovery records. Earlier versions did
+not write these records; the first startup without them still uses the configured bootstrap paths.
+Standalone does not deploy rank-engine. Existing load/score response envelopes remain compatible.
+
+`/health` reports diagnostic data and returns HTTP 200 when ready, or HTTP 503
+when Redis is unavailable, an expected model is missing, or a feature snapshot is empty or has the
+wrong dimension. Item ranking is required; user ranking is also required when configured, saved,
+or loaded. Docker checks `/health`. This endpoint does not load a model or refresh features.
+Callers that previously treated any HTTP 200 as liveness should now handle 503 during recovery.
+The existing `openrec_rank_requests_total` counts HTTP status; business failures that retain HTTP
+200 additionally increment `openrec_rank_business_errors_total{method,path,code}`. Monitor this
+counter for nonzero rates, and `openrec_rank_models_loaded{target_type}` for item/user load state.
+The legacy `openrec_rank_model_loaded` gauge continues to describe item ranking.
 
 The global catalog and LR/FM feature-set declarations are used only while training. A deployed
 release is self-contained: rank-engine loads its own `lr.features.json` or `fm.features.json` and
@@ -230,6 +255,8 @@ Train a checkpoint with `rec-algorithm`, or download the Douban one:
 | `MODEL_FEATURE_PATH` | inferred | training feature-space sidecar |
 | `MODEL_DIM` | `1024` | legacy checkpoint fallback dimension |
 | `MODEL_REQUIRED` | `false` | fail startup when automatic loading fails |
+| `MODEL_ROOT` | `/models` | training and release artifact root |
+| `MODEL_STATE_DIR` | `${MODEL_ROOT}/active` | durable per-target recovery records; must be writable and survive restarts |
 | `MODEL_DEVICE` | `auto` | inference device: `auto`, `cuda`, `cuda:0`, or `cpu` |
 | `FEATURE_REFRESH_SECONDS` | `300` | Redis feature cache refresh interval; `0` disables |
 
