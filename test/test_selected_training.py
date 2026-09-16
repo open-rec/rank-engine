@@ -6,7 +6,8 @@ import pytest
 import torch
 
 from algorithm.feature.feature_space import FeatureSpace
-from proto import Model, TrainModel, UserItems
+from proto import Model, UserItems
+from algorithm.rank.training import TrainingRequest, train_release
 import server
 
 
@@ -52,7 +53,7 @@ def test_subset_requires_publish_and_preserves_encoding(
         if target == "item"
         else ["user.age", "user.gender"],
     }
-    request = TrainModel(
+    request = TrainingRequest(
         scene="global",
         version="test-v1",
         business_date="2026-09-16",
@@ -67,7 +68,7 @@ def test_subset_requires_publish_and_preserves_encoding(
         feature_cutoff_time=1000,
         input_label_count=40,
     )
-    manifest = server.train_model(request)["data"]
+    manifest = train_release(request, tmp_path / "releases")
     assert server.model is None and server.user_model is None
     assert manifest["feature_selection"] == selection
     release = tmp_path / "releases" / target / "global" / "test-v1"

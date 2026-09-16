@@ -242,3 +242,9 @@ def test_metrics_report_each_target(client):
     body = client.get("/metrics").text
     assert 'openrec_rank_models_loaded{target_type="user"} 1.0' in body
     assert 'openrec_rank_models_loaded{target_type="item"} 0.0' in body
+
+
+def test_online_service_does_not_expose_training(client):
+    assert client.post("/model/train", json={}).status_code == 404
+    assert client.get("/features").status_code == 404
+    assert client.post("/features/validate", json={}).status_code == 404

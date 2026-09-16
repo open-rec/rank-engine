@@ -106,17 +106,20 @@ If `rec-server` also runs in the `openrec-bigdata` Docker network, use `rank.hos
 | GET | `/health` | readiness; HTTP 503 until Redis and required model feature snapshots are usable |
 | GET | `/metrics` | HTTP and business-error counters, latency, and per-target model state |
 | POST | `/model/load` | load a checkpoint into memory |
-| POST | `/model/train` | train and evaluate one immutable release from Spark-prepared JSONL |
 | POST | `/model/score` | score candidate items or users for a source user |
 | POST | `/model/refresh-features` | rebuild the Redis-backed `item` and `user` feature caches |
 | POST | `/clean` | drop the loaded model and free CUDA cache |
 | GET | `/` | static `index.html` |
 
-In cluster mode `/model/train` is internal. It accepts a dataset below `/models/training`, writes
-the checkpoint, FeatureSpace sidecar, metrics, and evaluation gate to
-`/models/releases/{target_type}/{scene}/{version}`, then atomically exposes that immutable directory. Loading a
-new release builds both its model and feature snapshot before changing the live scorer, so a failed
-load leaves the previously active version usable.
+Rank-engine is an online inference service. Training belongs to rec-algorithm and runs
+in the offline Spark job triggered by rec-console through Airflow. The former
+`/model/train`, `/features`, and `/features/validate` endpoints have been removed;
+feature discovery and selection validation use the rec-algorithm runner instead.
+Deploy the companion rec-algorithm and rec-console changes together. Training can
+complete while rank-engine is stopped and never activates a model automatically.
+
+Loading a release builds both its model and feature snapshot before changing the
+live scorer, so a failed load leaves the previously active version usable.
 
 Every successful `/model/load` also atomically saves its load configuration to
 `MODEL_STATE_DIR/{item,user}.json` before activating the model. The cluster default is
@@ -142,12 +145,10 @@ The existing `openrec_rank_requests_total` counts HTTP status; business failures
 counter for nonzero rates, and `openrec_rank_models_loaded{target_type}` for item/user load state.
 The legacy `openrec_rank_model_loaded` gauge continues to describe item ranking.
 
-The global catalog describes shared business features. `GET /features` exposes declared
-online/offline capabilities and model allowlists; `POST /features/validate` validates
-an ordered `feature_selection` with `user` and `candidate` lists. `/model/train`
-accepts that selection for LR/FM and saves it with fitted encoders, selected
-feature-definition fingerprints, training parameters and checkpoint checksums.
-Publishing loads this immutable selection; changing it requires retraining.
+The global catalog describes shared business features. Offline training saves each
+model's selected subset, fitted encoders, feature-definition fingerprints, training
+parameters and checksums in an immutable release. Publishing loads that selection;
+changing it requires retraining in rec-algorithm.
 
 New sidecars validate only their selected definitions against the installed catalog,
 so unrelated catalog additions do not invalidate them. Older sidecars retain their
@@ -156,20 +157,9 @@ materialized online values. This is a presence check, not a freshness or coverag
 Each scoring request uses a consistent model and encoded-feature snapshot, including
 during concurrent publication or refresh. Failed refresh keeps the previous snapshot.
 
-Training refuses to create a release when entity filtering leaves no labelled samples, when labels
-contain only clicks or only exposures, or when held-out AUC is undefined; a zero threshold no longer
-allows an untrained random checkpoint through the evaluation gate.
-
-Spark now supplies aligned `events.jsonl`, `sample_users.jsonl`, and `sample_items.jsonl`
-directories. Every directory must contain the same unique, non-null `_sample_id` population;
-rank-engine rejects incomplete or duplicate materialized rows and aligns them by that identity
-instead of Spark part-file order. The request includes the immutable `label_observation_cutoff`,
-source/constructed/materialized counts, feature time bounds, history row count, and materialization
-duration. `dropped_labels` is measured from constructed labels so item and generated U2U samples
-share a meaningful metric. Rank-engine fits the FeatureSpace only on the training time slice and
-records those boundaries and counts in the release manifest. The exported Redis bootstrap snapshot
-selects each entity's row at its latest label time, also independently of part-file order. The
-legacy raw-history reader remains only for backward-compatible local datasets.
+Offline sample validation, point-in-time joins, FeatureSpace fitting and evaluation
+gates are documented in [rec-algorithm](../rec-algorithm/README.md). Rank-engine only
+loads the resulting checkpoint and fitted sidecar for online scoring.
 
 ### load a model first
 
@@ -264,7 +254,7 @@ Train a checkpoint with `rec-algorithm`, or download the Douban one:
 | `MODEL_FEATURE_PATH` | inferred | training feature-space sidecar |
 | `MODEL_DIM` | `1024` | legacy checkpoint fallback dimension |
 | `MODEL_REQUIRED` | `false` | fail startup when automatic loading fails |
-| `MODEL_ROOT` | `/models` | training and release artifact root |
+| `MODEL_ROOT` | `/models` | model artifact root |
 | `MODEL_STATE_DIR` | `${MODEL_ROOT}/active` | durable per-target recovery records; must be writable and survive restarts |
 | `MODEL_DEVICE` | `auto` | inference device: `auto`, `cuda`, `cuda:0`, or `cpu` |
 | `FEATURE_REFRESH_SECONDS` | `300` | Redis feature cache refresh interval; `0` disables |
