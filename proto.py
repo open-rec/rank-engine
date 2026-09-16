@@ -8,19 +8,22 @@ class Model(BaseModel):
     model: str = Field(default="lr.pth")
     dim: int = Field(default=1024)
     type: str = Field(default="lr")
-    feature: Optional[str] = Field(default=None, description="optional FeatureSpace JSON sidecar")
+    feature: Optional[str] = Field(
+        default=None, description="optional FeatureSpace JSON sidecar"
+    )
     factor_dim: Optional[int] = Field(default=None, ge=1, le=256)
 
 
 class TrainModel(BaseModel):
-    scene: str
-    version: str
+    feature_selection: Optional[dict[str, List[str]]] = None
+    scene: str = Field(pattern="^[A-Za-z0-9_-]+$")
+    version: str = Field(pattern="^[A-Za-z0-9_-]+$")
     business_date: str
     revision: str
     dataset_dir: str
     epochs: int = Field(default=5, ge=1, le=100)
     batch_size: int = Field(default=256, ge=1)
-    validation_ratio: float = Field(default=.2, gt=0, lt=1)
+    validation_ratio: float = Field(default=0.2, gt=0, lt=1)
     min_auc: float = Field(default=0.0, ge=0, le=1)
     model_type: str = Field(default="lr", pattern="^(lr|fm)$")
     factor_dim: int = Field(default=8, ge=1, le=256)
@@ -37,13 +40,16 @@ class TrainModel(BaseModel):
 
 class UserItems(BaseModel):
     user_id: str = Field(default="", description="user id")
-    item_ids: List[str] = Field(default_factory=list, description="user score items")
-    candidate_ids: List[str] = Field(default_factory=list, description="generic score candidates")
+    item_ids: List[str] = Field(
+        default_factory=list, description="user score items"
+    )
+    candidate_ids: List[str] = Field(
+        default_factory=list, description="generic score candidates"
+    )
     target_type: str = Field(default="item", pattern="^(item|user)$")
 
 
 class ReResponse:
-
     def __init__(self, code=0, status="success", data=None, message=""):
         self.code = code
         self.status = status

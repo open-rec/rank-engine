@@ -32,6 +32,8 @@ from model import model_func_map
 from algorithm.feature.item_feature import ItemFeature
 from algorithm.feature.point_in_time import materialize_point_in_time_samples
 from algorithm.feature.user_feature import UserFeature
+from algorithm.feature.feature_space import FeatureSpace
+from algorithm.feature.feature_catalog import feature_catalog, select_features
 from algorithm.rank.lr import LRRecModel
 from algorithm.rank.fm import FMRecModel
 from proto import Model, ReResponse, TrainModel, UserItems
@@ -155,6 +157,25 @@ def metrics():
         models_loaded.labels("item").set(int(model is not None))
         models_loaded.labels("user").set(int(user_model is not None))
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/features")
+def features():
+    return response(feature_catalog())
+
+
+@app.post("/features/validate")
+def validate_features(info: dict):
+    try:
+        return response(
+            select_features(
+                info.get("model_type", "lr"),
+                info.get("target_type", "item"),
+                info.get("feature_selection"),
+            )
+        )
+    except ValueError as error:
+        return JSONResponse(status_code=422, content={"detail": str(error)})
 
 
 def model_device():
@@ -400,7 +421,10 @@ def _load_model(info, persist=True, expected_target=None):
         loaded_model.load_state_dict(state)
         loaded_model.to(device)
         loaded_model.eval()
+        snapshot["loaded_at"] = time.monotonic()
+        loaded_model.feature_snapshot = snapshot
         loaded_info = {
+            "feature_selection": snapshot.get("feature_selection"),
             "type": model_type,
             "path": info.model,
             "feature": str(feature_file) if feature_file else None,
@@ -443,6 +467,12 @@ def load_model(info: Model):
 @app.post("/model/train")
 def train_model(info: TrainModel):
     """Train an immutable artifact from a Spark-prepared dataset."""
+    try:
+        selection = select_features(
+            info.model_type, info.target_type, info.feature_selection
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     dataset = Path(info.dataset_dir).resolve()
     training_root = (Path(Config.MODEL.ROOT) / "training").resolve()
     artifact_root = (Path(Config.MODEL.ROOT) / "releases").resolve()
@@ -502,6 +532,22 @@ def train_model(info: TrainModel):
             raise ValueError(
                 "rank training has no entities active at their label times"
             )
+        space = FeatureSpace.for_model(
+            info.model_type, info.target_type, selection
+        )
+        for frame, columns in (
+            (sample_users, space.user_columns),
+            (sample_items, space.item_columns),
+        ):
+            for column in columns:
+                if (
+                    column.name not in frame
+                    or not frame[column.name].notna().any()
+                ):
+                    raise ValueError(
+                        "offline feature has no materialized values: %s"
+                        % column.feature_id
+                    )
         latest_users = _latest_feature_rows(events, sample_users)
         latest_items = _latest_feature_rows(events, sample_items)
         user_features = UserFeature(latest_users)
@@ -514,6 +560,7 @@ def train_model(info: TrainModel):
             user_features,
             item_features,
             events,
+            feature_space=space,
             scene=info.scene,
             model_file=staging / model_filename,
             feature_file=staging / feature_filename,
@@ -571,6 +618,21 @@ def train_model(info: TrainModel):
         feature_sha256 = hashlib.sha256(feature_bytes).hexdigest()
         feature_space = rank_model.dataset.feature_space
         manifest = {
+            "model_sha256": hashlib.sha256(
+                (staging / model_filename).read_bytes()
+            ).hexdigest(),
+            "feature_selection": feature_space.selection,
+            "feature_definitions": feature_space.feature_definitions,
+            "training_config": {
+                "epochs": info.epochs,
+                "batch_size": info.batch_size,
+                "validation_ratio": info.validation_ratio,
+                "min_auc": info.min_auc,
+                "model_type": info.model_type,
+                "factor_dim": info.factor_dim,
+                "scene": info.scene,
+                "target_type": info.target_type,
+            },
             "version": info.version,
             "scene": info.scene,
             "model_type": model_type,
@@ -638,11 +700,36 @@ def train_model(info: TrainModel):
 @app.post("/model/refresh-features")
 def refresh_features():
     try:
-        feature_service.load_all_features()
+        for target in ("item", "user"):
+            _refresh_features(target, force=True)
         return response(feature_service.stats())
     except Exception:
         logging.exception("feature refresh failed")
         raise ReException(ErrorCode.LOAD_MODEL_FAILED)
+
+
+def _refresh_features(target, force=False):
+    # Use the publication lock while preparing; inference retains its old
+    # snapshot.
+    with load_lock:
+        with model_lock:
+            active = user_model if target == "user" else model
+            snapshot = getattr(active, "feature_snapshot", None)
+        if snapshot is None or not snapshot.get("feature_file"):
+            return
+        age = time.monotonic() - snapshot.get("loaded_at", 0)
+        seconds = Config.MODEL.FEATURE_REFRESH_SECONDS
+        if not force and (seconds <= 0 or age < seconds):
+            return
+        prepared = feature_service.prepare_all_features(
+            snapshot["feature_file"]
+        )
+        if prepared["dim"] != active.dim:
+            raise ValueError("refreshed features do not match model dimension")
+        prepared["loaded_at"] = time.monotonic()
+        with model_lock:
+            feature_service.activate(prepared)
+            active.feature_snapshot = prepared
 
 
 @app.post("/clean")
@@ -690,20 +777,34 @@ def score(user_items: UserItems):
     if not candidate_ids:
         return response({})
     try:
-        feature_service.refresh_if_stale(
-            Config.MODEL.FEATURE_REFRESH_SECONDS, namespace=target_type
-        )
-        user_features = feature_service.get_user_feature_by_id(
-            user_items.user_id, namespace=target_type
+        try:
+            _refresh_features(target_type)
+        except Exception:
+            logging.exception(
+                "feature refresh failed; retaining last usable snapshot"
+            )
+        snapshot = getattr(current_model, "feature_snapshot", None)
+        user_features = (
+            snapshot["users"].get(user_items.user_id)
+            if snapshot is not None
+            else feature_service.get_user_feature_by_id(
+                user_items.user_id, namespace=target_type
+            )
         )
         batch_features = []
         item_score_map = {}
         hit_items = []
         for item_id in candidate_ids:
             item_features = (
-                feature_service.get_item_feature_by_id(item_id)
-                if target_type == "item"
-                else feature_service.get_candidate_user_feature_by_id(item_id)
+                snapshot["items"].get(item_id)
+                if snapshot is not None
+                else (
+                    feature_service.get_item_feature_by_id(item_id)
+                    if target_type == "item"
+                    else feature_service.get_candidate_user_feature_by_id(
+                        item_id
+                    )
+                )
             )
             if item_features is None:
                 item_score_map[item_id] = 0.0

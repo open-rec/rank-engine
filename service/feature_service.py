@@ -17,19 +17,28 @@ from util.redis_util import get_redis_client
 
 @singleton
 class FeatureService(object):
-
     NAMESPACES = ("item", "user")
 
     def __init__(self):
-        self.namespaces = {name: self._empty_snapshot(name) for name in self.NAMESPACES}
+        self.namespaces = {
+            name: self._empty_snapshot(name) for name in self.NAMESPACES
+        }
         self.lock = threading.RLock()
 
     @staticmethod
     def _empty_snapshot(namespace):
-        return {"users": {}, "items": {}, "dim": 0, "feature_file": None,
-                "feature_set": None, "catalog_version": None, "catalog_sha256": None,
-                "model_type": None,
-                "target_type": namespace, "loaded_at": 0}
+        return {
+            "users": {},
+            "items": {},
+            "dim": 0,
+            "feature_file": None,
+            "feature_set": None,
+            "catalog_version": None,
+            "catalog_sha256": None,
+            "model_type": None,
+            "target_type": namespace,
+            "loaded_at": 0,
+        }
 
     def load_all_features(self, feature_file=None, namespace=None):
         if feature_file:
@@ -45,39 +54,91 @@ class FeatureService(object):
 
     def prepare_all_features(self, feature_file=None):
         """Build a feature snapshot without changing the live scorer."""
-        user_feature = self.load_user_feature()
-        item_feature = self.load_item_feature()
-
         space = FeatureSpace.load(feature_file) if feature_file else None
+        # A pinned subset was checked against the installed definitions above.
+        # Its original producer catalog is also compatible with that subset.
+        accepted_catalog = (
+            (space.catalog_version, space.catalog_sha256)
+            if space and space.feature_definitions is not None
+            else None
+        )
+        user_feature = self.load_user_feature(accepted_catalog)
+        item_feature = self.load_item_feature(accepted_catalog)
         target_type = space.target_type if space else "item"
-        if user_feature.users.empty or (target_type == "item" and item_feature.items.empty):
-            return {"users": {}, "items": {}, "dim": 0,
-                    "feature_file": feature_file, "feature_set": None,
-                    "catalog_version": None, "catalog_sha256": None, "model_type": None,
-                    "target_type": target_type}
+        if user_feature.users.empty or (
+            target_type == "item" and item_feature.items.empty
+        ):
+            return {
+                "users": {},
+                "items": {},
+                "dim": 0,
+                "feature_file": feature_file,
+                "feature_set": None,
+                "catalog_version": None,
+                "catalog_sha256": None,
+                "model_type": None,
+                "target_type": target_type,
+            }
 
         if space:
-            candidates = item_feature.items if target_type == "item" else user_feature.users
-            user_map, item_map = space.build_maps(user_feature.users, candidates)
-            return {"users": user_map, "items": item_map, "dim": space.dim,
-                    "feature_file": feature_file, "feature_set": space.feature_set,
-                    "catalog_version": space.catalog_version,
-                    "catalog_sha256": space.catalog_sha256, "model_type": space.model_type,
-                    "target_type": target_type}
+            candidates = (
+                item_feature.items
+                if target_type == "item"
+                else user_feature.users
+            )
+            if space.feature_definitions is not None:
+                candidate_feature = (
+                    item_feature if target_type == "item" else user_feature
+                )
+                for owner, frame, columns in (
+                    (user_feature, user_feature.users, space.user_columns),
+                    (candidate_feature, candidates, space.item_columns),
+                ):
+                    for column in columns:
+                        available = getattr(
+                            owner, "materialized_columns", set(frame.columns)
+                        )
+                        if (
+                            column.name not in available
+                            or not frame[column.name].notna().any()
+                        ):
+                            raise ValueError(
+                                "online feature has no materialized values: %s"
+                                % column.feature_id
+                            )
+            user_map, item_map = space.build_maps(
+                user_feature.users, candidates
+            )
+            return {
+                "users": user_map,
+                "items": item_map,
+                "dim": space.dim,
+                "feature_selection": space.selection,
+                "feature_file": feature_file,
+                "feature_set": space.feature_set,
+                "catalog_version": space.catalog_version,
+                "catalog_sha256": space.catalog_sha256,
+                "model_type": space.model_type,
+                "target_type": target_type,
+            }
 
-        user_features = np.hstack([
-            user_feature.country,
-            user_feature.city,
-            user_feature.gender,
-            user_feature.age,
-            user_feature.tags
-        ])
+        user_features = np.hstack(
+            [
+                user_feature.country,
+                user_feature.city,
+                user_feature.gender,
+                user_feature.age,
+                user_feature.tags,
+            ]
+        )
 
-        item_features = np.hstack([
-            item_feature.category,
-            item_feature.scene,
-            item_feature.weight,
-        ])
+        item_features = np.hstack(
+            [
+                item_feature.category,
+                item_feature.scene,
+                item_feature.weight,
+            ]
+        )
 
         user_map = {
             user_id: user_features[i]
@@ -88,10 +149,16 @@ class FeatureService(object):
             item_id: item_features[i]
             for i, item_id in enumerate(item_feature.raw_id)
         }
-        return {"users": user_map, "items": item_map,
-                "dim": user_features.shape[1] + item_features.shape[1],
-                "feature_file": feature_file, "feature_set": None,
-                "catalog_version": None, "model_type": None, "target_type": "item"}
+        return {
+            "users": user_map,
+            "items": item_map,
+            "dim": user_features.shape[1] + item_features.shape[1],
+            "feature_file": feature_file,
+            "feature_set": None,
+            "catalog_version": None,
+            "model_type": None,
+            "target_type": "item",
+        }
 
     def activate(self, snapshot):
         namespace = snapshot.get("target_type", "item")
@@ -116,6 +183,7 @@ class FeatureService(object):
                 except Exception as e:
                     logging.warning(f"load key:{key}, value:{value} failed")
                     continue
+
         for key in redis_client.scan_iter(key_pattern, count=batch_size):
             batch_keys.append(key.decode("utf-8"))
             if len(batch_keys) >= batch_size:
@@ -124,31 +192,43 @@ class FeatureService(object):
         if batch_keys:
             update_key_values(batch_keys)
 
-        filter_values = {key: value for key, value in key_values.items() if value}
+        filter_values = {
+            key: value for key, value in key_values.items() if value
+        }
         return {i: value for i, value in enumerate(filter_values.values())}
 
-    def load_user_feature(self):
+    def load_user_feature(self, accepted_catalog=None):
         user_data = self._batch_load("user:*", batch_size=500)
         users = pd.DataFrame.from_dict(user_data, orient="index")
         users = self._merge_event_features(
-            users, self._batch_load("feature:user:*", batch_size=500))
+            users,
+            self._batch_load("feature:user:*", batch_size=500),
+            accepted_catalog,
+        )
         user_feature = UserFeature(users=users)
+        user_feature.materialized_columns = set(users.columns)
         return user_feature
 
-    def load_item_feature(self, ):
+    def load_item_feature(self, accepted_catalog=None):
         item_data = self._batch_load("item:*", batch_size=500)
         items = pd.DataFrame.from_dict(item_data, orient="index")
         items = self._merge_event_features(
-            items, self._batch_load("feature:item:*", batch_size=500))
+            items,
+            self._batch_load("feature:item:*", batch_size=500),
+            accepted_catalog,
+        )
         item_feature = ItemFeature(items=items)
+        item_feature.materialized_columns = set(items.columns)
         return item_feature
 
     @staticmethod
-    def _merge_event_features(entities, snapshots):
+    def _merge_event_features(entities, snapshots, accepted_catalog=None):
         """Overlay data-processor snapshots onto raw entity rows by entity id.
 
-        A snapshot is stored as ``{entityId, features: {...}}`` rather than as a flat entity.
-        Keep the raw profile as the left-hand side: deleted/stale snapshot keys must not recreate
+        A snapshot is stored as ``{entityId, features: {...}}`` rather than as
+        a flat entity.
+        Keep the raw profile as the left-hand side: deleted/stale snapshot keys
+        must not recreate
         an entity that is absent from the serving entity table.
         """
         if entities.empty or not snapshots:
@@ -158,35 +238,51 @@ class FeatureService(object):
         for snapshot in snapshots.values():
             snapshot_sha = snapshot.get("catalogSha256")
             snapshot_version = snapshot.get("catalogVersion")
-            if snapshot_sha and (snapshot_sha != catalog.sha256 or
-                                 int(snapshot_version) != catalog.version):
-                raise ValueError("realtime snapshot uses a different feature catalog")
+            if snapshot_sha and (int(snapshot_version), snapshot_sha) not in (
+                (catalog.version, catalog.sha256),
+                accepted_catalog,
+            ):
+                raise ValueError(
+                    "realtime snapshot uses a different feature catalog"
+                )
             entity_id = snapshot.get("entityId")
             features = snapshot.get("features")
             if entity_id is None or not isinstance(features, dict):
                 continue
-            # Window and recency values are time-dependent. Re-materialize them when rank-engine
-            # refreshes its serving snapshot instead of freezing them at the last arriving event.
+            # Window and recency values are time-dependent. Re-materialize them
+            # when rank-engine
+            # refreshes its serving snapshot instead of freezing them at the
+            # last arriving event.
             features = dict(features)
             now = int(time.time())
             last_time = int(features.get("event_last_time", 0) or 0)
             if "event_recency_seconds" in features:
-                features["event_recency_seconds"] = max(0, now - last_time) if last_time else 0
+                features["event_recency_seconds"] = (
+                    max(0, now - last_time) if last_time else 0
+                )
             histogram = snapshot.get("recentEventTimeCounts") or {}
             for name in list(features):
                 match = re.match(r"^event_count_(\d+)d$", name)
                 if not match or not histogram:
                     continue
                 boundary = now - int(match.group(1)) * 86400
-                features[name] = sum(int(count) for event_time, count in histogram.items()
-                                     if int(event_time) >= boundary)
+                features[name] = sum(
+                    int(count)
+                    for event_time, count in histogram.items()
+                    if int(event_time) >= boundary
+                )
             rows.append(dict(features, id=entity_id))
         if not rows:
             return entities
         feature_frame = pd.DataFrame(rows).drop_duplicates("id", keep="last")
-        feature_columns = [name for name in feature_frame.columns if name != "id"]
-        # A refreshed realtime snapshot is authoritative for behavioural columns.
-        entities = entities.drop(columns=[c for c in feature_columns if c in entities.columns])
+        feature_columns = [
+            name for name in feature_frame.columns if name != "id"
+        ]
+        # A refreshed realtime snapshot is authoritative for behavioural
+        # columns.
+        entities = entities.drop(
+            columns=[c for c in feature_columns if c in entities.columns]
+        )
         return entities.merge(feature_frame, how="left", on="id")
 
     def get_item_feature_by_id(self, id=""):
@@ -204,13 +300,21 @@ class FeatureService(object):
     def refresh_if_stale(self, seconds, namespace="item"):
         with self.lock:
             loaded_at = self.namespaces[namespace]["loaded_at"]
-        if seconds > 0 and loaded_at and time.monotonic() - loaded_at >= seconds:
+        if (
+            seconds > 0
+            and loaded_at
+            and time.monotonic() - loaded_at >= seconds
+        ):
             self.load_all_features(namespace=namespace)
 
     def stats(self):
         with self.lock:
-            return {name: {"users": len(snapshot["users"]),
-                           "candidates": len(snapshot["items"]),
-                           "dim": snapshot["dim"],
-                           "feature_file": snapshot["feature_file"]}
-                    for name, snapshot in self.namespaces.items()}
+            return {
+                name: {
+                    "users": len(snapshot["users"]),
+                    "candidates": len(snapshot["items"]),
+                    "dim": snapshot["dim"],
+                    "feature_file": snapshot["feature_file"],
+                }
+                for name, snapshot in self.namespaces.items()
+            }

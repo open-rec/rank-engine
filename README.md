@@ -142,11 +142,20 @@ The existing `openrec_rank_requests_total` counts HTTP status; business failures
 counter for nonzero rates, and `openrec_rank_models_loaded{target_type}` for item/user load state.
 The legacy `openrec_rank_model_loaded` gauge continues to describe item ranking.
 
-The global catalog and LR/FM feature-set declarations are used only while training. A deployed
-release is self-contained: rank-engine loads its own `lr.features.json` or `fm.features.json` and
-does not consult those declarations. New manifests carry the fitted sidecar's SHA-256, input
-dimension, catalog version and feature-set name; rec-console verifies the immutable file before
-asking rank-engine to activate it. Legacy sidecars without this provenance remain loadable.
+The global catalog describes shared business features. `GET /features` exposes declared
+online/offline capabilities and model allowlists; `POST /features/validate` validates
+an ordered `feature_selection` with `user` and `candidate` lists. `/model/train`
+accepts that selection for LR/FM and saves it with fitted encoders, selected
+feature-definition fingerprints, training parameters and checkpoint checksums.
+Publishing loads this immutable selection; changing it requires retraining.
+
+New sidecars validate only their selected definitions against the installed catalog,
+so unrelated catalog additions do not invalidate them. Older sidecars retain their
+original provenance validation. Deployment rejects selected columns with no
+materialized online values. This is a presence check, not a freshness or coverage SLA.
+Each scoring request uses a consistent model and encoded-feature snapshot, including
+during concurrent publication or refresh. Failed refresh keeps the previous snapshot.
+
 Training refuses to create a release when entity filtering leaves no labelled samples, when labels
 contain only clicks or only exposures, or when held-out AUC is undefined; a zero threshold no longer
 allows an untrained random checkpoint through the evaluation gate.

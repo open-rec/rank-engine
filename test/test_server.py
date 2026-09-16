@@ -11,69 +11,97 @@ import server
 
 
 def test_materialized_rows_are_aligned_and_reject_incomplete_samples():
-    events = pd.DataFrame([
-        {"_sample_id": "later", "time": 20},
-        {"_sample_id": "earlier", "time": 10},
-    ])
-    users = pd.DataFrame([
-        {"_sample_id": "earlier", "id": "u", "city": "old"},
-        {"_sample_id": "later", "id": "u", "city": "new"},
-    ])
-    items = pd.DataFrame([
-        {"_sample_id": "earlier", "id": "i", "weight": 1},
-        {"_sample_id": "later", "id": "i", "weight": 2},
-    ])
+    events = pd.DataFrame(
+        [
+            {"_sample_id": "later", "time": 20},
+            {"_sample_id": "earlier", "time": 10},
+        ]
+    )
+    users = pd.DataFrame(
+        [
+            {"_sample_id": "earlier", "id": "u", "city": "old"},
+            {"_sample_id": "later", "id": "u", "city": "new"},
+        ]
+    )
+    items = pd.DataFrame(
+        [
+            {"_sample_id": "earlier", "id": "i", "weight": 1},
+            {"_sample_id": "later", "id": "i", "weight": 2},
+        ]
+    )
 
-    aligned_users, aligned_items = server._align_materialized_rows(events, users, items)
+    aligned_users, aligned_items = server._align_materialized_rows(
+        events, users, items
+    )
     assert aligned_users["city"].tolist() == ["new", "old"]
     assert aligned_items["weight"].tolist() == [2, 1]
-    assert server._latest_feature_rows(events, aligned_users).iloc[0]["city"] == "new"
+    assert (
+        server._latest_feature_rows(events, aligned_users).iloc[0]["city"]
+        == "new"
+    )
 
     with pytest.raises(ValueError, match="do not match"):
         server._align_materialized_rows(events, users.iloc[:1], items)
 
 
 def test_materialized_rows_reject_duplicate_sample_identity():
-    events = pd.DataFrame([
-        {"_sample_id": "same", "time": 10},
-        {"_sample_id": "same", "time": 20},
-    ])
-    rows = pd.DataFrame([
-        {"_sample_id": "same", "id": "u"},
-        {"_sample_id": "other", "id": "u"},
-    ])
+    events = pd.DataFrame(
+        [
+            {"_sample_id": "same", "time": 10},
+            {"_sample_id": "same", "time": 20},
+        ]
+    )
+    rows = pd.DataFrame(
+        [
+            {"_sample_id": "same", "id": "u"},
+            {"_sample_id": "other", "id": "u"},
+        ]
+    )
     with pytest.raises(ValueError, match="duplicate"):
         server._align_materialized_rows(events, rows, rows)
 
 
 def snapshot(dim):
-    return {"users": {"u1": np.array([1., 2.], dtype=np.float32)},
-            "items": {"i1": np.array([3., 4.], dtype=np.float32)},
-            "dim": dim, "feature_file": "features.json", "feature_set": "ranking-test-v1",
-            "catalog_version": 1, "model_type": None}
+    return {
+        "users": {"u1": np.array([1.0, 2.0], dtype=np.float32)},
+        "items": {"i1": np.array([3.0, 4.0], dtype=np.float32)},
+        "dim": dim,
+        "feature_file": "features.json",
+        "feature_set": "ranking-test-v1",
+        "catalog_version": 1,
+        "model_type": None,
+    }
 
 
 def stub_feature_snapshot(monkeypatch, value):
     activated = []
-    monkeypatch.setattr(server.feature_service, "prepare_all_features",
-                        lambda feature_file: value)
+    monkeypatch.setattr(
+        server.feature_service,
+        "prepare_all_features",
+        lambda feature_file: value,
+    )
     monkeypatch.setattr(server.feature_service, "activate", activated.append)
     return activated
 
 
-@pytest.mark.parametrize("model_type, checkpoint", [
-    ("lr", LRModel(dim=4)),
-    ("fm", FMModel(dim=4, factor_dim=6)),
-])
-def test_load_model_activates_lr_and_fm_atomically(tmp_path, monkeypatch,
-                                                   model_type, checkpoint):
+@pytest.mark.parametrize(
+    "model_type, checkpoint",
+    [
+        ("lr", LRModel(dim=4)),
+        ("fm", FMModel(dim=4, factor_dim=6)),
+    ],
+)
+def test_load_model_activates_lr_and_fm_atomically(
+    tmp_path, monkeypatch, model_type, checkpoint
+):
     model_file = tmp_path / (model_type + ".pth")
     torch.save(checkpoint.state_dict(), model_file)
     prepared = snapshot(4)
     activated = stub_feature_snapshot(monkeypatch, prepared)
 
-    result = server._load_model(Model(type=model_type, model=str(model_file),
-                                      feature="features.json"))
+    result = server._load_model(
+        Model(type=model_type, model=str(model_file), feature="features.json")
+    )
 
     assert result["type"] == model_type
     assert result["dim"] == 4
@@ -88,7 +116,9 @@ def test_load_model_activates_lr_and_fm_atomically(tmp_path, monkeypatch,
         assert server.model.factor_dim == 6
 
 
-def test_failed_fm_load_keeps_previous_model_and_feature_snapshot(tmp_path, monkeypatch):
+def test_failed_fm_load_keeps_previous_model_and_feature_snapshot(
+    tmp_path, monkeypatch
+):
     previous = LRModel(dim=4)
     server.model = previous
     server.model_info = {"type": "lr", "dim": 4}
@@ -98,8 +128,9 @@ def test_failed_fm_load_keeps_previous_model_and_feature_snapshot(tmp_path, monk
     activated = stub_feature_snapshot(monkeypatch, snapshot(4))
 
     with pytest.raises(ValueError, match="factors do not match"):
-        server._load_model(Model(type="fm", model=str(model_file),
-                                 feature="features.json"))
+        server._load_model(
+            Model(type="fm", model=str(model_file), feature="features.json")
+        )
 
     assert server.model is previous
     assert server.model_info == {"type": "lr", "dim": 4}
@@ -115,20 +146,30 @@ def test_load_rejects_feature_space_for_another_model(tmp_path, monkeypatch):
     activated = stub_feature_snapshot(monkeypatch, prepared)
 
     with pytest.raises(ValueError, match="belongs to fm"):
-        server._load_model(Model(type="lr", model=str(model_file), feature="features.json"))
+        server._load_model(
+            Model(type="lr", model=str(model_file), feature="features.json")
+        )
 
     assert activated == []
 
 
-def test_load_model_rejects_explicit_wrong_fm_factor_dim(tmp_path, monkeypatch):
+def test_load_model_rejects_explicit_wrong_fm_factor_dim(
+    tmp_path, monkeypatch
+):
     checkpoint = FMModel(dim=4, factor_dim=6)
     model_file = tmp_path / "fm.pth"
     torch.save(checkpoint.state_dict(), model_file)
     activated = stub_feature_snapshot(monkeypatch, snapshot(4))
 
     with pytest.raises(RuntimeError, match="size mismatch"):
-        server._load_model(Model(type="fm", model=str(model_file),
-                                 feature="features.json", factor_dim=2))
+        server._load_model(
+            Model(
+                type="fm",
+                model=str(model_file),
+                feature="features.json",
+                factor_dim=2,
+            )
+        )
 
     assert activated == []
     assert server.model is None
@@ -143,55 +184,78 @@ def test_load_endpoint_rejects_unknown_model_type():
 def test_load_endpoint_maps_missing_checkpoint_to_model_not_found(monkeypatch):
     stub_feature_snapshot(monkeypatch, snapshot(4))
     with pytest.raises(ReException) as error:
-        server.load_model(Model(type="lr", model="missing.pth", feature="features.json"))
+        server.load_model(
+            Model(type="lr", model="missing.pth", feature="features.json")
+        )
     assert error.value.error_code is ErrorCode.MODEL_NOT_FOUND
 
 
 def configure_scoring_features(monkeypatch, user, items):
-    monkeypatch.setattr(server.feature_service, "refresh_if_stale",
-                        lambda seconds, namespace="item": None)
-    monkeypatch.setattr(server.feature_service, "get_user_feature_by_id",
-                        lambda user_id, namespace="item": user)
-    monkeypatch.setattr(server.feature_service, "get_item_feature_by_id", items.get)
+    monkeypatch.setattr(
+        server.feature_service,
+        "refresh_if_stale",
+        lambda seconds, namespace="item": None,
+    )
+    monkeypatch.setattr(
+        server.feature_service,
+        "get_user_feature_by_id",
+        lambda user_id, namespace="item": user,
+    )
+    monkeypatch.setattr(
+        server.feature_service, "get_item_feature_by_id", items.get
+    )
 
 
 def test_score_batches_known_items_and_degrades_missing_item(monkeypatch):
     scoring_model = LRModel(dim=4)
     with torch.no_grad():
-        scoring_model.linear.weight.fill_(.1)
+        scoring_model.linear.weight.fill_(0.1)
         scoring_model.linear.bias.zero_()
     scoring_model.eval()
     server.model = scoring_model
     configure_scoring_features(
-        monkeypatch, np.array([1., 2.], dtype=np.float32),
-        {"i1": np.array([3., 4.], dtype=np.float32)})
+        monkeypatch,
+        np.array([1.0, 2.0], dtype=np.float32),
+        {"i1": np.array([3.0, 4.0], dtype=np.float32)},
+    )
 
     result = server.score(UserItems(user_id="u1", item_ids=["i1", "missing"]))
 
     assert result["status"] == "success"
-    assert result["data"]["i1"] == pytest.approx(torch.sigmoid(torch.tensor(1.)).item())
+    assert result["data"]["i1"] == pytest.approx(
+        torch.sigmoid(torch.tensor(1.0)).item()
+    )
     assert result["data"]["missing"] == 0.0
 
 
 def test_score_unknown_user_uses_zero_user_vector(monkeypatch):
     scoring_model = LRModel(dim=4)
     with torch.no_grad():
-        scoring_model.linear.weight.copy_(torch.tensor([[10., 10., 1., 1.]]))
+        scoring_model.linear.weight.copy_(
+            torch.tensor([[10.0, 10.0, 1.0, 1.0]])
+        )
         scoring_model.linear.bias.zero_()
     server.model = scoring_model
     configure_scoring_features(
-        monkeypatch, None, {"i1": np.array([1., 2.], dtype=np.float32)})
+        monkeypatch, None, {"i1": np.array([1.0, 2.0], dtype=np.float32)}
+    )
 
     result = server.score(UserItems(user_id="unknown", item_ids=["i1"]))
 
-    assert result["data"]["i1"] == pytest.approx(torch.sigmoid(torch.tensor(3.)).item())
+    assert result["data"]["i1"] == pytest.approx(
+        torch.sigmoid(torch.tensor(3.0)).item()
+    )
 
 
-def test_score_dimension_mismatch_is_reported_as_inference_failure(monkeypatch):
+def test_score_dimension_mismatch_is_reported_as_inference_failure(
+    monkeypatch,
+):
     server.model = LRModel(dim=4)
     configure_scoring_features(
-        monkeypatch, np.array([1.], dtype=np.float32),
-        {"i1": np.array([2.], dtype=np.float32)})
+        monkeypatch,
+        np.array([1.0], dtype=np.float32),
+        {"i1": np.array([2.0], dtype=np.float32)},
+    )
 
     with pytest.raises(ReException) as error:
         server.score(UserItems(user_id="u1", item_ids=["i1"]))
@@ -208,8 +272,12 @@ def test_score_without_loaded_model_is_rejected():
 def test_empty_item_list_does_not_touch_feature_store(monkeypatch):
     server.model = LRModel(dim=4)
     monkeypatch.setattr(
-        server.feature_service, "refresh_if_stale",
-        lambda seconds, namespace="item": pytest.fail("feature store should not be touched"))
+        server.feature_service,
+        "refresh_if_stale",
+        lambda seconds, namespace="item": pytest.fail(
+            "feature store should not be touched"
+        ),
+    )
     assert server.score(UserItems(user_id="u1", item_ids=[]))["data"] == {}
 
 
@@ -219,26 +287,52 @@ def test_user_target_scores_candidate_user_features(monkeypatch):
     server.user_model = scoring_model
     server.user_model_info = {"target_type": "user"}
     namespaces = []
-    monkeypatch.setattr(server.feature_service, "refresh_if_stale",
-                        lambda seconds, namespace="item": namespaces.append(namespace))
-    monkeypatch.setattr(server.feature_service, "get_user_feature_by_id",
-                        lambda user_id, namespace="item": np.array(
-                            [1., 2.], dtype=np.float32) if namespace == "user" else None)
-    monkeypatch.setattr(server.feature_service, "get_candidate_user_feature_by_id",
-                        lambda user_id: np.array([3., 4.], dtype=np.float32))
-    result = server.score(UserItems(user_id="u1", candidate_ids=["u2"], target_type="user"))
+    monkeypatch.setattr(
+        server,
+        "_refresh_features",
+        lambda namespace: namespaces.append(namespace),
+    )
+    monkeypatch.setattr(
+        server.feature_service,
+        "get_user_feature_by_id",
+        lambda user_id, namespace="item": (
+            np.array([1.0, 2.0], dtype=np.float32)
+            if namespace == "user"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        server.feature_service,
+        "get_candidate_user_feature_by_id",
+        lambda user_id: np.array([3.0, 4.0], dtype=np.float32),
+    )
+    result = server.score(
+        UserItems(user_id="u1", candidate_ids=["u2"], target_type="user")
+    )
     assert set(result["data"]) == {"u2"}
     assert namespaces == ["user"]
 
 
 def test_train_request_requires_auditable_feature_cutoff():
     with pytest.raises(ValueError):
-        TrainModel(scene="home", version="20260824-r001", business_date="2026-08-24",
-                   revision="r001", dataset_dir="/models/training/home/run")
+        TrainModel(
+            scene="home",
+            version="20260824-r001",
+            business_date="2026-08-24",
+            revision="r001",
+            dataset_dir="/models/training/home/run",
+        )
 
     request = TrainModel(
-        scene="home", version="20260824-r001", business_date="2026-08-24",
-        revision="r001", dataset_dir="/models/training/home/run", feature_cutoff_time=123,
-        label_observation_cutoff=456, input_label_count=10, constructed_label_count=8)
+        scene="home",
+        version="20260824-r001",
+        business_date="2026-08-24",
+        revision="r001",
+        dataset_dir="/models/training/home/run",
+        feature_cutoff_time=123,
+        label_observation_cutoff=456,
+        input_label_count=10,
+        constructed_label_count=8,
+    )
     assert request.feature_cutoff_time == 123
     assert request.constructed_label_count == 8
