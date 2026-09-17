@@ -218,7 +218,9 @@ class FeatureService(object):
             accepted_catalog,
         )
         item_feature = ItemFeature(items=items)
-        item_feature.materialized_columns = set(items.columns)
+        # ItemFeature applies the shared content materializer (including
+        # camelCase aliases and content_age_hours) used by offline training.
+        item_feature.materialized_columns = set(item_feature.items.columns)
         return item_feature
 
     @staticmethod

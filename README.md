@@ -221,6 +221,11 @@ Items with no cached features score `0.0` rather than being dropped (`123` above
 
 LR and FM are implemented. Both consume the same persisted `FeatureSpace` vector; FM adds
 second-order feature interactions without changing Redis materialization or `/model/score`.
+Content-enabled sidecars can select item title, subcategory, tags and content age. Raw item
+profiles are normalized through rec-algorithm's shared content materializer during every feature
+refresh: title-like fields use the fitted sidecar's fixed-width feature hash, while content age is
+recomputed from `pubTime` at refresh time. New item IDs therefore remain scoreable from content
+without rebuilding a vocabulary.
 `model_func_map` maps a `type` string to a class from `rec-algorithm`:
 
 ```python

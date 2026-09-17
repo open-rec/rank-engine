@@ -112,3 +112,25 @@ def test_load_user_feature_reads_realtime_snapshot(monkeypatch):
 
     assert users.loc["u1", "event_count"] == 4
     assert users.loc["u1", "event_click_count"] == 2
+
+
+def test_load_item_feature_materializes_content_for_online_encoding(monkeypatch):
+    service = fresh_service()
+    published = int(pd.Timestamp.now(tz="UTC").timestamp()) - 7200
+    values = {
+        "item:*": {0: {
+            "id": "i1", "title": "Cold Start News", "category": "news",
+            "subcategory": "local", "tags": "breaking", "pubTime": published,
+        }},
+        "feature:item:*": {},
+    }
+    monkeypatch.setattr(
+        service, "_batch_load", lambda pattern, batch_size=500: values[pattern]
+    )
+
+    item_feature = service.load_item_feature()
+    row = item_feature.items.iloc[0]
+
+    assert row.pub_time == published
+    assert 1.9 <= row.content_age_hours <= 2.1
+    assert "content_age_hours" in item_feature.materialized_columns
