@@ -237,19 +237,24 @@ class FeatureService(object):
             return entities
         rows = []
         catalog = FeatureCatalog.load()
+        entity_ids = set(entities["id"].dropna().astype(str))
+        incompatible = 0
         for snapshot in snapshots.values():
+            entity_id = snapshot.get("entityId")
+            features = snapshot.get("features")
+            # Streaming tombstones and E2E fixtures may leave an old feature
+            # key behind after the corresponding serving entity disappears.
+            # Such an orphan cannot participate in scoring and must not make a
+            # newer catalog unusable for every live entity.
+            if str(entity_id) not in entity_ids or not isinstance(features, dict):
+                continue
             snapshot_sha = snapshot.get("catalogSha256")
             snapshot_version = snapshot.get("catalogVersion")
             if snapshot_sha and (int(snapshot_version), snapshot_sha) not in (
                 (catalog.version, catalog.sha256),
                 accepted_catalog,
             ):
-                raise ValueError(
-                    "realtime snapshot uses a different feature catalog"
-                )
-            entity_id = snapshot.get("entityId")
-            features = snapshot.get("features")
-            if entity_id is None or not isinstance(features, dict):
+                incompatible += 1
                 continue
             # Window and recency values are time-dependent. Re-materialize them
             # when rank-engine
@@ -274,6 +279,11 @@ class FeatureService(object):
                     if int(event_time) >= boundary
                 )
             rows.append(dict(features, id=entity_id))
+        if incompatible:
+            logging.warning(
+                "ignored %d realtime feature snapshots from an incompatible catalog",
+                incompatible,
+            )
         if not rows:
             return entities
         feature_frame = pd.DataFrame(rows).drop_duplicates("id", keep="last")

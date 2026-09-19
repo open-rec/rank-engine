@@ -164,6 +164,25 @@ def _state_path(target_type):
     return Path(Config.MODEL.STATE_DIR) / (target_type + ".json")
 
 
+def _bootstrap_model_info(target_type):
+    model_path = (
+        Config.MODEL.USER_PATH if target_type == "user" else Config.MODEL.PATH
+    )
+    if not model_path:
+        return None
+    feature = (
+        Config.MODEL.USER_FEATURE_PATH
+        if target_type == "user"
+        else Config.MODEL.FEATURE_PATH
+    )
+    return Model(
+        type=Config.MODEL.TYPE,
+        model=model_path,
+        feature=feature,
+        dim=Config.MODEL.DIM,
+    )
+
+
 def _restore_model(target_type):
     # Serialize recovery with publication and recheck after waiting for another
     # load.
@@ -174,33 +193,34 @@ def _restore_model(target_type):
                 return
         path = _state_path(target_type)
         if path.exists():
-            saved = json.loads(path.read_text())
-            if (
-                saved["schema_version"] != 1
-                or saved["target_type"] != target_type
-            ):
-                raise ValueError("invalid persisted model state")
-            info = Model(**saved["load"])
-        else:
-            model_path = (
-                Config.MODEL.USER_PATH
-                if target_type == "user"
-                else Config.MODEL.PATH
-            )
-            if not model_path:
-                return
-            feature = (
-                Config.MODEL.USER_FEATURE_PATH
-                if target_type == "user"
-                else Config.MODEL.FEATURE_PATH
-            )
-            info = Model(
-                type=Config.MODEL.TYPE,
-                model=model_path,
-                feature=feature,
-                dim=Config.MODEL.DIM,
-            )
-        _load_model(info, persist=False, expected_target=target_type)
+            try:
+                saved = json.loads(path.read_text())
+                if (
+                    saved["schema_version"] != 1
+                    or saved["target_type"] != target_type
+                ):
+                    raise ValueError("invalid persisted model state")
+                info = Model(**saved["load"])
+                return _load_model(
+                    info, persist=False, expected_target=target_type
+                )
+            except Exception:
+                logging.exception(
+                    "persisted %s model is unusable; falling back to bootstrap",
+                    target_type,
+                )
+                info = _bootstrap_model_info(target_type)
+                if info is None:
+                    raise
+                # Replace the stale state only after the bootstrap model has
+                # loaded successfully. A transient failure keeps the published
+                # state available for a later retry.
+                return _load_model(
+                    info, persist=True, expected_target=target_type
+                )
+        info = _bootstrap_model_info(target_type)
+        if info is not None:
+            return _load_model(info, persist=False, expected_target=target_type)
 
 
 def _persist_model(info, loaded_info):

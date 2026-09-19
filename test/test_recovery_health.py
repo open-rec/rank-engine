@@ -2,6 +2,7 @@ import json
 import socket
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -136,17 +137,18 @@ def test_failed_state_write_keeps_old_model(tmp_path, monkeypatch):
     assert server.model is previous
 
 
-def test_corrupt_state_never_falls_back_to_bootstrap(tmp_path, monkeypatch):
+def test_corrupt_state_falls_back_to_bootstrap(tmp_path, monkeypatch):
     info = checkpoint(tmp_path, monkeypatch)
     monkeypatch.setattr(server.Config.MODEL, "PATH", info.model)
+    monkeypatch.setattr(server.Config.MODEL, "FEATURE_PATH", info.feature)
     path = server._state_path("item")
     path.parent.mkdir()
     path.write_text("broken json")
     server.startup()
-    assert server.model is None
-    with pytest.raises(Exception):
-        server.score(UserItems(user_id="u", item_ids=["c"]))
-    assert server.model is None
+    assert server.model is not None
+    assert server.model_info["path"] == info.model
+    saved = json.loads(path.read_text())
+    assert saved["load"]["model"] == str(Path(info.model).resolve())
 
 
 def test_lazy_user_load_works_without_item_configuration(

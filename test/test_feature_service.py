@@ -89,12 +89,27 @@ def test_merge_rematerializes_time_dependent_features(monkeypatch):
     assert merged.event_count_7d == 2
 
 
-def test_merge_rejects_realtime_snapshot_from_another_catalog():
-    entities = pd.DataFrame([{"id": "u1"}])
+def test_merge_ignores_realtime_snapshot_from_another_catalog():
+    entities = pd.DataFrame([{"id": "u1", "country": "CN"}])
     snapshots = {0: {"entityId": "u1", "catalogVersion": 1,
                      "catalogSha256": "different", "features": {"event_count": 1}}}
-    with pytest.raises(ValueError, match="different feature catalog"):
-        fresh_service()._merge_event_features(entities, snapshots)
+
+    merged = fresh_service()._merge_event_features(entities, snapshots)
+
+    assert merged.to_dict("records") == [{"id": "u1", "country": "CN"}]
+
+
+def test_merge_ignores_stale_catalog_snapshot_for_deleted_entity():
+    entities = pd.DataFrame([{"id": "u1"}])
+    snapshots = {
+        0: {"entityId": "deleted", "catalogVersion": 1,
+            "catalogSha256": "different", "features": {"event_count": 99}},
+        1: {"entityId": "u1", "features": {"event_count": 4}},
+    }
+
+    merged = fresh_service()._merge_event_features(entities, snapshots)
+
+    assert merged.to_dict("records") == [{"id": "u1", "event_count": 4}]
 
 
 def test_load_user_feature_reads_realtime_snapshot(monkeypatch):
