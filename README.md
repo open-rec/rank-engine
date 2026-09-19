@@ -8,7 +8,7 @@
 Online ranking service for OpenRec. `rec-server`'s rank DAG nodes POST a source user plus candidate
 items or users and receive a score per candidate, which is fused with recall scores.
 
-FastAPI + PyTorch, listening on port 8123.
+FastAPI serving for PyTorch LR/FM and LightGBM, listening on port 8123.
 
 ## how it fits in
 
@@ -179,8 +179,8 @@ uses `/bootstrap-models/rank/user/lr.pth`; requests set `target_type=user` and u
 
 | Field | Default | Meaning |
 |---|---|---|
-| `type` | `lr` | registered model type: `lr` or `fm` |
-| `model` | `lr.pth` | path to the `state_dict`, relative to the working directory |
+| `type` | `lr` | registered model type: `lr`, `fm`, or `lightgbm` |
+| `model` | `lr.pth` | path to the PyTorch `state_dict` or LightGBM text model |
 | `dim` | `1024` | input feature width — **must** match what the checkpoint was trained with |
 | `feature` | `null` | persisted feature-space JSON; inferred from the model path when possible |
 | `factor_dim` | inferred | optional FM latent width; normally inferred from the checkpoint |
@@ -219,8 +219,8 @@ Items with no cached features score `0.0` rather than being dropped (`123` above
 
 ## models
 
-LR and FM are implemented. Both consume the same persisted `FeatureSpace` vector; FM adds
-second-order feature interactions without changing Redis materialization or `/model/score`.
+LR, FM, and LightGBM are implemented. All consume the same persisted `FeatureSpace` vector; FM adds
+second-order feature interactions and LightGBM uses tree inference without changing Redis materialization or `/model/score`.
 Content-enabled sidecars can select item title, subcategory, tags and content age. Raw item
 profiles are normalized through rec-algorithm's shared content materializer during every feature
 refresh: title-like fields use the fitted sidecar's fixed-width feature hash, while content age is
@@ -232,6 +232,7 @@ without rebuilding a vocabulary.
 model_func_map = {
     "lr": LRModel,
     "fm": FMModel,
+    "lightgbm": LightGBMBinaryModel,
 }
 ```
 

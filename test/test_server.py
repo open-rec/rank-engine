@@ -4,6 +4,7 @@ import torch
 
 from algorithm.rank.fm import FMModel
 from algorithm.rank.lr import LRModel
+from algorithm.rank.lightgbm import LightGBMBinaryModel
 from error_code import ErrorCode, ReException
 from proto import Model, UserItems
 import server
@@ -127,6 +128,30 @@ def test_load_endpoint_rejects_unknown_model_type():
     with pytest.raises(ReException) as error:
         server.load_model(Model(type="deepfm", model="unused.pth"))
     assert error.value.error_code is ErrorCode.INVALID_MODEL
+
+
+def test_load_and_score_lightgbm(tmp_path, monkeypatch):
+    pytest.importorskip("lightgbm")
+    path = tmp_path / "lightgbm.txt"
+    checkpoint = LightGBMBinaryModel(
+        n_estimators=5, min_child_samples=1
+    ).fit(
+        np.array([[0, 0, 0, 0], [1, 1, 1, 1]], dtype=np.float32),
+        np.array([0, 1]),
+    )
+    checkpoint.save(path)
+    prepared = snapshot(4)
+    prepared["model_type"] = "lightgbm"
+    stub_feature_snapshot(monkeypatch, prepared)
+
+    loaded = server._load_model(
+        Model(type="lightgbm", model=str(path), feature="features.json")
+    )
+    result = server.score(UserItems(user_id="u1", item_ids=["i1"]))
+
+    assert loaded["type"] == "lightgbm"
+    assert loaded["device"] == "cpu"
+    assert 0 <= result["data"]["i1"] <= 1
 
 
 def test_load_endpoint_maps_missing_checkpoint_to_model_not_found(monkeypatch):

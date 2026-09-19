@@ -337,8 +337,16 @@ def _load_model(info, persist=True, expected_target=None):
             )
         effective_dim = snapshot["dim"] if feature_file else info.dim
         device = model_device()
-        state = torch.load(info.model, map_location=device)
         kwargs = {}
+        if model_type == "lightgbm":
+            loaded_model = model_func_map[model_type].load(info.model)
+            if loaded_model.booster.num_feature() != effective_dim:
+                raise ValueError(
+                    "LightGBM model features do not match the feature dimension"
+                )
+            loaded_model.dim = effective_dim
+        else:
+            state = torch.load(info.model, map_location=device)
         if model_type == "fm":
             factors = state.get("factors")
             if (
@@ -350,10 +358,11 @@ def _load_model(info, persist=True, expected_target=None):
                     "FM checkpoint factors do not match the feature dimension"
                 )
             kwargs["factor_dim"] = info.factor_dim or factors.shape[1]
-        loaded_model = model_func_map[model_type](effective_dim, **kwargs)
-        loaded_model.load_state_dict(state)
-        loaded_model.to(device)
-        loaded_model.eval()
+        if model_type != "lightgbm":
+            loaded_model = model_func_map[model_type](effective_dim, **kwargs)
+            loaded_model.load_state_dict(state)
+            loaded_model.to(device)
+            loaded_model.eval()
         snapshot["loaded_at"] = time.monotonic()
         loaded_model.feature_snapshot = snapshot
         loaded_info = {
@@ -362,7 +371,7 @@ def _load_model(info, persist=True, expected_target=None):
             "path": info.model,
             "feature": str(feature_file) if feature_file else None,
             "dim": effective_dim,
-            "device": str(device),
+            "device": "cpu" if model_type == "lightgbm" else str(device),
             "feature_set": snapshot.get("feature_set"),
             "catalog_version": snapshot.get("catalog_version"),
             "catalog_sha256": snapshot.get("catalog_sha256"),
@@ -519,21 +528,22 @@ def score(user_items: UserItems):
                 raise ValueError(
                     "feature dimension does not match loaded model"
                 )
-            batch_features.append(
-                torch.tensor(
-                    features,
-                    dtype=torch.float32,
-                    device=next(current_model.parameters()).device,
-                )
-            )
+            batch_features.append(features.astype(np.float32, copy=False))
             hit_items.append(item_id)
         if batch_features:
-            with torch.no_grad():
-                scores = (
-                    current_model(torch.stack(batch_features))
-                    .reshape(-1)
-                    .tolist()
-                )
+            matrix = np.stack(batch_features)
+            if (current_info or {}).get("type") == "lightgbm":
+                scores = current_model.predict_proba(matrix).reshape(-1).tolist()
+            else:
+                device = next(current_model.parameters()).device
+                with torch.no_grad():
+                    scores = (
+                        current_model(
+                            torch.tensor(matrix, dtype=torch.float32, device=device)
+                        )
+                        .reshape(-1)
+                        .tolist()
+                    )
             item_score_map.update(zip(hit_items, scores))
         return response(item_score_map)
     except Exception:
