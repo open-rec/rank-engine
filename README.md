@@ -65,9 +65,11 @@ docker compose -f docker-compose.cluster.yml up -d --build
 curl http://127.0.0.1:8123/health
 ```
 
-The compose build starts from the official PyTorch 2.8 CUDA 12.9 runtime image, then installs the
-repository requirements, including `torch==2.10.0`; 2.10.0 is therefore the application runtime
-version in both the container and a direct host install. The image
+The compose build starts from the official PyTorch 2.10.0 CUDA 12.8 runtime image.
+Its preinstalled Torch satisfies `torch==2.10.0`, so installing the repository requirements
+does not upgrade Torch or replace its CUDA dependencies. The initial base-image pull is still large.
+The image uses Ubuntu system Python; pip installation is explicitly enabled inside
+the container with `PIP_BREAK_SYSTEM_PACKAGES=1`. It
 uses the sibling `rec-algorithm` directory as a BuildKit additional context, joins
 `openrec-bigdata`, reads Redis at `redis:6379`, mounts the sibling `model` repository read-only at
 `/models`, and automatically loads the default LR checkpoint. The default deployment does not
@@ -84,10 +86,17 @@ unless each worker having its own model and feature cache is intentional.
 Regional registries and Python package mirrors can be selected without editing repository files:
 
 ```shell
-RANK_BASE_IMAGE=registry.example.com/pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime \
+RANK_BASE_IMAGE=registry.example.com/pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
 RANK_PIP_INDEX_URL=https://pypi.example.com/simple \
 docker compose -f docker-compose.cluster.yml build rank-engine
 ```
+
+For a build using a complete local wheel cache, pass the Docker build arguments
+`PIP_FIND_LINKS` (a wheel index reachable from the build) and `PIP_NO_INDEX=1`.
+The build validates the preinstalled Torch 2.10.0 / CUDA 12.8 runtime before installing
+`requirements-common.txt`, then checks dependency compatibility,
+and verifies that PyTorch 2.10.0 and LightGBM import successfully. The base image's
+unused torchvision and torchaudio packages are removed to avoid unrelated dependency constraints.
 
 For a host-side `rec-server`, use:
 
