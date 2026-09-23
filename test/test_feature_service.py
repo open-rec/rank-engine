@@ -118,6 +118,7 @@ def test_load_user_feature_reads_realtime_snapshot(monkeypatch):
         "user:*": {0: {"id": "u1", "country": "CN"}},
         "feature:user:*": {0: {
             "entityId": "u1", "features": {"event_count": 4, "event_click_count": 2},
+            "stringFeatures": {"preferred_categories": "books,music"},
         }},
     }
     monkeypatch.setattr(service, "_batch_load",
@@ -127,6 +128,7 @@ def test_load_user_feature_reads_realtime_snapshot(monkeypatch):
 
     assert users.loc["u1", "event_count"] == 4
     assert users.loc["u1", "event_click_count"] == 2
+    assert users.loc["u1", "preferred_categories"] == "books,music"
 
 
 def test_load_item_feature_materializes_content_for_online_encoding(monkeypatch):

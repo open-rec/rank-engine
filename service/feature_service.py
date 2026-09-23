@@ -242,6 +242,7 @@ class FeatureService(object):
         for snapshot in snapshots.values():
             entity_id = snapshot.get("entityId")
             features = snapshot.get("features")
+            string_features = snapshot.get("stringFeatures") or {}
             # Streaming tombstones and E2E fixtures may leave an old feature
             # key behind after the corresponding serving entity disappears.
             # Such an orphan cannot participate in scoring and must not make a
@@ -261,6 +262,7 @@ class FeatureService(object):
             # refreshes its serving snapshot instead of freezing them at the
             # last arriving event.
             features = dict(features)
+            features.update(string_features)
             now = int(time.time())
             last_time = int(features.get("event_last_time", 0) or 0)
             if "event_recency_seconds" in features:
