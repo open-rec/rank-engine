@@ -30,6 +30,8 @@ class FeatureService(object):
         return {
             "users": {},
             "items": {},
+            "sessions": {},
+            "space": None,
             "dim": 0,
             "feature_file": None,
             "feature_set": None,
@@ -64,6 +66,8 @@ class FeatureService(object):
         )
         user_feature = self.load_user_feature(accepted_catalog)
         item_feature = self.load_item_feature(accepted_catalog)
+        session_rows = (self._load_session_features(accepted_catalog)
+                        if space and space.session_columns else pd.DataFrame())
         target_type = space.target_type if space else "item"
         if user_feature.users.empty or (
             target_type == "item" and item_feature.items.empty
@@ -71,6 +75,8 @@ class FeatureService(object):
             return {
                 "users": {},
                 "items": {},
+                "sessions": {},
+                "space": space,
                 "dim": 0,
                 "feature_file": feature_file,
                 "feature_set": None,
@@ -109,9 +115,15 @@ class FeatureService(object):
             user_map, item_map = space.build_maps(
                 user_feature.users, candidates
             )
+            session_map = {}
+            if not session_rows.empty and space.session_columns:
+                session_map = space._build_map(
+                    session_rows, space.transform_sessions(session_rows))
             return {
                 "users": user_map,
                 "items": item_map,
+                "sessions": session_map,
+                "space": space,
                 "dim": space.dim,
                 "feature_selection": space.selection,
                 "feature_file": feature_file,
@@ -152,6 +164,8 @@ class FeatureService(object):
         return {
             "users": user_map,
             "items": item_map,
+            "sessions": {},
+            "space": None,
             "dim": user_features.shape[1] + item_features.shape[1],
             "feature_file": feature_file,
             "feature_set": None,
@@ -159,6 +173,19 @@ class FeatureService(object):
             "model_type": None,
             "target_type": "item",
         }
+
+    def _load_session_features(self, accepted_catalog=None):
+        rows = pd.DataFrame.from_dict(
+            self._batch_load("feature:session:*", batch_size=500), orient="index")
+        if rows.empty:
+            return rows
+        if "entityId" in rows and "id" not in rows:
+            rows["id"] = rows["entityId"]
+        if "features" in rows:
+            expanded = pd.json_normalize(rows["features"])
+            expanded.index = rows.index
+            rows = pd.concat([rows.drop(columns=["features"]), expanded], axis=1)
+        return rows
 
     def activate(self, snapshot):
         namespace = snapshot.get("target_type", "item")

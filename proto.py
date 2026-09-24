@@ -1,5 +1,5 @@
 import json
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,9 @@ class UserItems(BaseModel):
         default_factory=list, description="generic score candidates"
     )
     target_type: str = Field(default="item", pattern="^(item|user)$")
+    session_id: str = Field(default="", description="current session id")
+    context: Dict[str, Any] = Field(default_factory=dict)
+    candidate_contexts: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class ReResponse:

@@ -493,6 +493,7 @@ def score(user_items: UserItems):
                 "feature refresh failed; retaining last usable snapshot"
             )
         snapshot = getattr(current_model, "feature_snapshot", None)
+        space = snapshot.get("space") if snapshot is not None else None
         user_features = (
             snapshot["users"].get(user_items.user_id)
             if snapshot is not None
@@ -503,7 +504,11 @@ def score(user_items: UserItems):
         batch_features = []
         item_score_map = {}
         hit_items = []
-        for item_id in candidate_ids:
+        from algorithm.feature.context_feature import materialize_request_context
+        dynamic_contexts = materialize_request_context(
+            user_items.context, candidate_ids,
+            user_items.context.get("request_time"), user_items.candidate_contexts)
+        for position, item_id in enumerate(candidate_ids):
             item_features = (
                 snapshot["items"].get(item_id)
                 if snapshot is not None
@@ -520,10 +525,20 @@ def score(user_items: UserItems):
                 continue
             effective_user = user_features
             if effective_user is None:
-                effective_user = np.zeros(
-                    current_model.dim - item_features.size
-                )
-            features = np.concatenate((effective_user, item_features))
+                width = space.user_width if space is not None else (
+                    current_model.dim - item_features.size)
+                effective_user = np.zeros(width)
+            parts = [effective_user, item_features]
+            if space is not None:
+                session = snapshot.get("sessions", {}).get(user_items.session_id)
+                if session is None:
+                    session = np.zeros(space.session_width)
+                parts.append(session)
+                row = dynamic_contexts.iloc[[position]]
+                parts.append(space.transform_contexts(row)[0])
+                # Candidate-specific interaction values use the same envelope.
+                parts.append(space.transform_interactions(row)[0])
+            features = np.concatenate(parts)
             if features.size != current_model.dim:
                 raise ValueError(
                     "feature dimension does not match loaded model"
