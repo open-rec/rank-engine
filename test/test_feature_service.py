@@ -151,3 +151,81 @@ def test_load_item_feature_materializes_content_for_online_encoding(monkeypatch)
     assert row.pub_time == published
     assert 1.9 <= row.content_age_hours <= 2.1
     assert "content_age_hours" in item_feature.materialized_columns
+
+
+def test_sessions_validate_catalog_and_refresh_recency(monkeypatch):
+    from algorithm.feature.feature_catalog import FeatureCatalog
+    catalog = FeatureCatalog.load()
+    service = fresh_service()
+    monkeypatch.setattr("service.feature_service.time.time", lambda: 200.)
+    monkeypatch.setattr(service, "_batch_load", lambda *args, **kwargs: {
+        0: {"entityId": "good", "catalogVersion": catalog.version,
+            "catalogSha256": catalog.sha256, "features": {
+                "event_count": 2, "event_last_time": 150, "event_recency_seconds": 0}},
+        1: {"entityId": "bad", "catalogVersion": 1, "catalogSha256": "bad",
+            "features": {"event_count": 100}},
+    })
+    rows = service._load_session_features().set_index("id")
+    assert rows.loc["good", "event_recency_seconds"] == 50
+    assert pd.isna(rows.loc["bad", "event_count"])
+
+
+def test_sessions_accept_pinned_producer_catalog(monkeypatch):
+    service = fresh_service()
+    monkeypatch.setattr(service, "_batch_load", lambda *args, **kwargs: {
+        0: {"entityId": "s", "catalogVersion": 17, "catalogSha256": "pinned",
+            "features": {"event_count": 2}},
+    })
+    assert service._load_session_features().empty
+    assert service._load_session_features((17, "pinned")).iloc[0].event_count == 2
+
+
+def test_refresh_decays_short_windows_rates_and_commerce_means(monkeypatch):
+    monkeypatch.setattr("service.feature_service.time.time", lambda: 200000.)
+    features = {
+        "event_expose_count_5m": 1, "event_value_sum_5m": 5,
+        "event_expose_count_1h": 2, "event_value_sum_1h": 7,
+        "event_count_1d": 3, "event_ctr_1d": 1,
+        "event_click_price_mean_1d": 100, "event_click_price_mean_30d": 100,
+        "event_buy_price_mean_1d": 90, "event_recent_to_long_click_price_ratio": 1,
+    }
+    stats = {
+        "100000": {"count": 1, "count:click": 1, "value_sum": 2,
+                   "price_count:click": 1, "price_sum:click": 100},
+        "199000": {"count": 1, "count:expose": 1, "value_sum": 5},
+        "199999": {"count": 1, "count:click": 1, "value_sum": 3,
+                   "price_count:click": 1, "price_sum:click": 20},
+    }
+    rows = fresh_service()._merge_event_features(pd.DataFrame([{"id": "u"}]), {
+        0: {"entityId": "u", "features": features, "recentEventStats": stats}})
+    row = rows.iloc[0]
+    assert row.event_expose_count_5m == 0
+    assert row.event_value_sum_5m == 3
+    assert row.event_expose_count_1h == 1
+    assert row.event_value_sum_1h == 8
+    assert row.event_count_1d == 2
+    assert row.event_ctr_1d == 1
+    assert row.event_click_price_mean_1d == 20
+    assert row.event_click_price_mean_30d == 60
+    assert row.event_buy_price_mean_1d == 0
+    assert row.event_recent_to_long_click_price_ratio == pytest.approx(1 / 3)
+    from algorithm.feature.event_feature import enrich_entity_features
+    events = pd.DataFrame([
+        {"user_id": "u", "item_id": "i", "scene": "s", "type": kind,
+         "time": stamp, "value": value}
+        for kind, stamp, value in (("click", 100000, 2), ("expose", 199000, 5),
+                                   ("click", 199999, 3))
+    ])
+    offline = enrich_entity_features(pd.DataFrame([{"id": "u"}]), events,
+                                     "user", 200000).iloc[0]
+    for name in ("event_expose_count_5m", "event_value_sum_5m",
+                 "event_expose_count_1h", "event_value_sum_1h",
+                 "event_count_1d", "event_ctr_1d"):
+        assert row[name] == pytest.approx(offline[name])
+
+
+def test_empty_window_histogram_clears_old_values():
+    features = {"event_expose_count_5m": 5, "event_ctr_7d": 2,
+                "event_click_price_mean_1d": 80}
+    fresh_service()._refresh_window_stats(features, {}, 100)
+    assert all(value == 0 for value in features.values())

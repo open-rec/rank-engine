@@ -10,6 +10,13 @@ from proto import Model, UserItems
 import server
 
 
+@pytest.mark.parametrize("payload, expected", [({}, ""), ({"session_id": None}, ""),
+                                              ({"session_id": "s1"}, "s1")])
+def test_optional_session_wire_compatibility(payload, expected):
+    request = UserItems.model_validate({"user_id": "u1", "item_ids": ["i1"], **payload})
+    assert request.session_id == expected
+
+
 def snapshot(dim):
     return {
         "users": {"u1": np.array([1.0, 2.0], dtype=np.float32)},

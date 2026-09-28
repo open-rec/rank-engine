@@ -175,17 +175,15 @@ class FeatureService(object):
         }
 
     def _load_session_features(self, accepted_catalog=None):
-        rows = pd.DataFrame.from_dict(
-            self._batch_load("feature:session:*", batch_size=500), orient="index")
-        if rows.empty:
-            return rows
-        if "entityId" in rows and "id" not in rows:
-            rows["id"] = rows["entityId"]
-        if "features" in rows:
-            expanded = pd.json_normalize(rows["features"])
-            expanded.index = rows.index
-            rows = pd.concat([rows.drop(columns=["features"]), expanded], axis=1)
-        return rows
+        snapshots = self._batch_load("feature:session:*", batch_size=500)
+        identities = [{"id": snapshot["entityId"]} for snapshot in snapshots.values()
+                      if snapshot.get("entityId") and isinstance(snapshot.get("features"), dict)]
+        if not identities:
+            return pd.DataFrame()
+        # Sessions use the same catalog and refresh-time semantics as entities.
+        rows = self._merge_event_features(
+            pd.DataFrame(identities).drop_duplicates("id"), snapshots, accepted_catalog)
+        return rows if "event_count" in rows else pd.DataFrame()
 
     def activate(self, snapshot):
         namespace = snapshot.get("target_type", "item")
@@ -250,8 +248,8 @@ class FeatureService(object):
         item_feature.materialized_columns = set(item_feature.items.columns)
         return item_feature
 
-    @staticmethod
-    def _merge_event_features(entities, snapshots, accepted_catalog=None):
+    @classmethod
+    def _merge_event_features(cls, entities, snapshots, accepted_catalog=None):
         """Overlay data-processor snapshots onto raw entity rows by entity id.
 
         A snapshot is stored as ``{entityId, features: {...}}`` rather than as
@@ -305,8 +303,10 @@ class FeatureService(object):
                 features[name] = sum(
                     int(count)
                     for event_time, count in histogram.items()
-                    if int(event_time) >= boundary
+                    if boundary <= int(event_time) <= now
                 )
+            if isinstance(snapshot.get("recentEventStats"), dict):
+                cls._refresh_window_stats(features, snapshot["recentEventStats"], now)
             rows.append(dict(features, id=entity_id))
         if incompatible:
             logging.warning(
@@ -325,6 +325,57 @@ class FeatureService(object):
             columns=[c for c in feature_columns if c in entities.columns]
         )
         return entities.merge(feature_frame, how="left", on="id")
+
+    @staticmethod
+    def _refresh_window_stats(features, histogram, now):
+        """Refresh bounded windows from mutation-resolved producer time buckets."""
+        buckets = [(int(stamp), values) for stamp, values in histogram.items()]
+
+        window_totals = {}
+
+        def total(key, seconds):
+            if seconds not in window_totals:
+                sums = {}
+                for stamp, values in buckets:
+                    if now - seconds <= stamp <= now:
+                        for field, value in values.items():
+                            sums[field] = sums.get(field, 0.0) + float(value)
+                window_totals[seconds] = sums
+            return window_totals[seconds].get(key, 0.0)
+
+        def ratio(numerator, denominator):
+            return numerator / denominator if denominator > 0 else 0.0
+
+        rates = {"ctr": ("click", "expose"),
+                 "collect_per_click": ("collect", "click"),
+                 "buy_per_click": ("buy", "click"),
+                 "buy_per_collect": ("buy", "collect")}
+        for name in list(features):
+            match = re.fullmatch(r"event_(count|expose_count|value_sum)_(\d+)([mhd])", name)
+            if match:
+                operation, amount, unit = match.groups()
+                seconds = int(amount) * {"m": 60, "h": 3600, "d": 86400}[unit]
+                key = {"count": "count", "expose_count": "count:expose",
+                       "value_sum": "value_sum"}[operation]
+                features[name] = total(key, seconds)
+                continue
+            match = re.fullmatch(r"event_(ctr|collect_per_click|buy_per_click|buy_per_collect)_(\d+)d", name)
+            if match:
+                numerator, denominator = rates[match.group(1)]
+                seconds = int(match.group(2)) * 86400
+                features[name] = ratio(total("count:" + numerator, seconds),
+                                       total("count:" + denominator, seconds))
+                continue
+            match = re.fullmatch(r"event_(click|buy)_price_mean_(\d+)d", name)
+            if match:
+                event_type, days = match.groups()
+                seconds = int(days) * 86400
+                features[name] = ratio(total("price_sum:" + event_type, seconds),
+                                       total("price_count:" + event_type, seconds))
+        if "event_recent_to_long_click_price_ratio" in features:
+            features["event_recent_to_long_click_price_ratio"] = ratio(
+                features.get("event_click_price_mean_1d", 0),
+                features.get("event_click_price_mean_30d", 0))
 
     def get_item_feature_by_id(self, id=""):
         with self.lock:

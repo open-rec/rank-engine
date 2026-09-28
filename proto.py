@@ -1,7 +1,7 @@
 import json
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Model(BaseModel):
@@ -26,6 +26,12 @@ class UserItems(BaseModel):
     session_id: str = Field(default="", description="current session id")
     context: Dict[str, Any] = Field(default_factory=dict)
     candidate_contexts: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session_id(cls, value):
+        # Older Java callers serialize an absent optional session as JSON null.
+        return "" if value is None else value
 
 
 class ReResponse:
