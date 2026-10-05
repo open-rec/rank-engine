@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
 
 permissions:
   contents: read
@@ -25,6 +25,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: open-rec/rec-algorithm
+          ref: e2bab2c3a4d0692756da9eb4abd4414e126bab87
           path: rec-algorithm
       - name: Set up Python
         uses: actions/setup-python@v6
