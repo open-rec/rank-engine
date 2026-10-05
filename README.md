@@ -1,5 +1,7 @@
 # OpenRec Rank Engine
 
+[Release v0.1.0](RELEASE_NOTES.md) · [Changelog](CHANGELOG.md)
+
 [![CI](https://github.com/open-rec/rank-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/open-rec/rank-engine/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141.1-009688?logo=fastapi&logoColor=white)

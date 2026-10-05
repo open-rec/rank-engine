@@ -28,7 +28,7 @@ from proto import Model, ReResponse, UserItems
 from service.feature_service import FeatureService
 from util.redis_util import get_redis_client
 
-app = FastAPI(title="OpenRec Rank Engine", version="1.0")
+app = FastAPI(title="OpenRec Rank Engine", version="0.1.0")
 model = None
 model_info = None
 user_model = None
