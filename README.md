@@ -18,9 +18,12 @@ rec-server ──POST /model/score──> rank-engine ──> LRModel (from rec-
                                        └──reads user:* / item:* features──> Redis
 ```
 
-Ranking is optional. If this service is down, `rec-server` logs
-`rank score failed with exception` and returns the recall order unranked — the request still
-succeeds, so check the logs rather than assuming ranking is live.
+Standalone deliberately bypasses ranking. In cluster, a rank-call failure may be caught by
+rec-server and leave `rankScore` unset while recall/operation processing still returns candidates.
+The cluster startup gate therefore checks rank-engine health and requires rank scores in its
+recommendation smoke. `/health` on rec-server is liveness; `/ready` controls recommendation
+admission. Check these gates and the returned scores rather than assuming nonempty results prove
+ranking ran. Rank-engine remains a Python service; its callers and Spark jobs use Java 21.
 
 ## install
 
@@ -71,8 +74,9 @@ does not upgrade Torch or replace its CUDA dependencies. The initial base-image 
 The image uses Ubuntu system Python; pip installation is explicitly enabled inside
 the container with `PIP_BREAK_SYSTEM_PACKAGES=1`. It
 uses the sibling `rec-algorithm` directory as a BuildKit additional context, joins
-`openrec-bigdata`, reads Redis at `redis:6379`, mounts the sibling `model` repository read-only at
-`/models`, and automatically loads the default LR checkpoint. The default deployment does not
+`openrec-bigdata`, reads Redis at `redis:6379`, mounts the sibling `model` directory read-only at
+`/bootstrap-models`, and automatically loads the default LR checkpoint. The separate
+`openrec-model-artifacts` volume is mounted at `/models` for retained releases and active state. The default deployment does not
 require an NVIDIA runtime. To explicitly reserve all visible GPUs, add the repository-owned
 override:
 
