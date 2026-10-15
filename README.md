@@ -46,7 +46,7 @@ pip install -r requirements.txt
 ## start
 
 ```shell
-bash start.sh            # uvicorn server:app --reload
+bash start.sh            # uvicorn server:app; host, port, and workers are configurable
 ```
 
 All settings can be supplied through environment variables; local defaults still use Redis on
@@ -206,8 +206,10 @@ the exact training vocabulary and derives `dim` from it. `dim` remains only as a
 fallback for legacy checkpoints without a sidecar.
 
 For a legacy model without a feature sidecar, `dim` constructs `LRModel(dim)` before
-`load_state_dict`, so a mismatch fails to load. The pre-trained Douban checkpoint in
-[model](https://github.com/open-rec/model) uses 63.
+`load_state_dict`, so a mismatch fails to load. The current generated bootstrap checkpoint in
+[model](https://github.com/open-rec/model) includes a fitted sidecar and manifest; use their
+recorded input dimension rather than a historical hard-coded width. The checked-in item LR
+manifest currently records 423, which may change when the bundle is regenerated.
 
 ### score
 
@@ -255,12 +257,16 @@ model_func_map = {
 FM's `factor_dim` defaults to 8 during training and is recorded in the manifest. Loading also
 derives it from the `factors` tensor, so activation and rollback remain self-contained.
 
-Train a checkpoint with `rec-algorithm`, or download the Douban one:
+Train a checkpoint with `rec-algorithm`, or use the generated example-fixture bootstrap bundle:
 
 | Source | Type | Dim | Path |
 |---|---|---|---|
-| [model](https://github.com/open-rec/model) | LR | 63 | `model/rank/item/lr.pth` from the workspace root |
-| `rec-algorithm` `test_lr.py::test_train` | LR | depends on the dataset | `rec-algorithm/model/lr.pth` |
+| [model](https://github.com/open-rec/model) | LR | from `lr.features.json` / `lr.manifest.json` (currently 423) | `model/rank/item/lr.pth` from the workspace root |
+| `rec-algorithm` `test_lr.py::test_train` | LR | depends on the fitted feature space | `{model_home}/rank/default/lr.pth` |
+
+`model_home` uses `OPENREC_MODEL_HOME` first, then the sibling model repository when it has a
+`rank/` directory, otherwise `rec-algorithm/model`. Every checkpoint must travel with its matching
+`*.features.json`; the current default bundle is generated from `example/data/test`, not Douban.
 
 ## configuration
 
