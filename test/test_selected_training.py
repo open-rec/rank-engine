@@ -162,7 +162,7 @@ def test_publication_during_request_keeps_original_model_and_features(
             "items": {"i": np.ones(4)},
         }
 
-    monkeypatch.setattr(server, "_schedule_feature_refresh", publish_during_refresh)
+    monkeypatch.setattr(server, "_refresh_features", publish_during_refresh)
     result = server.score(UserItems(user_id="u", item_ids=["i"]))
     assert result["data"]["i"] == pytest.approx(
         torch.sigmoid(torch.tensor(3.0)).item()
@@ -181,5 +181,5 @@ def test_failed_refresh_retains_usable_snapshot(monkeypatch):
     def fail(target):
         raise ConnectionError("redis unavailable")
 
-    monkeypatch.setattr(server, "_schedule_feature_refresh", fail)
+    monkeypatch.setattr(server, "_refresh_features", fail)
     assert server.score(UserItems(user_id="u", item_ids=["i"]))["code"] == 0

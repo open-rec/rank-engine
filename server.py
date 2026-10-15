@@ -35,9 +35,6 @@ user_model = None
 user_model_info = None
 model_lock = threading.RLock()
 load_lock = threading.RLock()
-refresh_lock = threading.Lock()
-refresh_workers = {}
-refresh_attempts = {}
 feature_service = FeatureService()
 request_count = Counter(
     "openrec_rank_requests",
@@ -440,54 +437,8 @@ def _refresh_features(target, force=False):
             raise ValueError("refreshed features do not match model dimension")
         prepared["loaded_at"] = time.monotonic()
         with model_lock:
-            if active is not (user_model if target == "user" else model):
-                return
             feature_service.activate(prepared)
             active.feature_snapshot = prepared
-
-
-def _schedule_feature_refresh(target):
-    """Serve the current snapshot while one bounded worker refreshes each target."""
-    with model_lock:
-        active = user_model if target == "user" else model
-        snapshot = getattr(active, "feature_snapshot", None)
-    seconds = Config.MODEL.FEATURE_REFRESH_SECONDS
-    now = time.monotonic()
-    if (
-        not snapshot
-        or not snapshot.get("feature_file")
-        or seconds <= 0
-        or now - snapshot.get("loaded_at", 0) < seconds
-    ):
-        return
-    with refresh_lock:
-        if target in refresh_workers:
-            return
-        previous_model, attempted_at = refresh_attempts.get(target, (None, 0))
-        if previous_model is active and now - attempted_at < seconds:
-            return
-        refresh_attempts[target] = (active, now)
-
-        def refresh():
-            try:
-                _refresh_features(target)
-            except Exception:
-                logging.exception(
-                    "feature refresh failed; retaining last usable snapshot"
-                )
-            finally:
-                with refresh_lock:
-                    refresh_workers.pop(target, None)
-
-        worker = threading.Thread(
-            target=refresh, name=f"feature-refresh-{target}", daemon=True
-        )
-        refresh_workers[target] = worker
-        try:
-            worker.start()
-        except Exception:
-            refresh_workers.pop(target, None)
-            raise
 
 
 @app.post("/clean")
@@ -536,7 +487,7 @@ def score(user_items: UserItems):
         return response({})
     try:
         try:
-            _schedule_feature_refresh(target_type)
+            _refresh_features(target_type)
         except Exception:
             logging.exception(
                 "feature refresh failed; retaining last usable snapshot"

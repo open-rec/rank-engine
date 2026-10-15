@@ -53,10 +53,9 @@ All settings can be supplied through environment variables; local defaults still
 `localhost:6379` and listen on `0.0.0.0:8123`. Interactive docs: http://127.0.0.1:8123/docs
 
 Features are loaded when a model is loaded, not while the Python module is imported. Redis is read
-with incremental `SCAN` calls rather than the blocking `KEYS` command. After `FEATURE_REFRESH_SECONDS` (300 by default), a scoring request schedules a background
-refresh while continuing to use the last usable snapshot. Each target has at most one refresh
-worker, and failed attempts are retried no more than once per interval.
-`/model/refresh-features` remains synchronous and can force an immediate refresh. Item and User rank use independent `item` and `user` feature namespaces; each namespace
+with incremental `SCAN` calls rather than the blocking `KEYS` command. The cache refreshes every
+`FEATURE_REFRESH_SECONDS` (300 by default), and `/model/refresh-features` can force an immediate
+refresh. Item and User rank use independent `item` and `user` feature namespaces; each namespace
 owns its source-user vectors, candidate vectors, FeatureSpace, dimension, and refresh timestamp, so
 loading or refreshing one model cannot change the other's encoding. `/health` reports both under
 `features.item` and `features.user`. If automatic loading starts before Redis has data, the first
