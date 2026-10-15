@@ -269,7 +269,7 @@ def test_user_target_scores_candidate_user_features(monkeypatch):
     namespaces = []
     monkeypatch.setattr(
         server,
-        "_refresh_features",
+        "_schedule_feature_refresh",
         lambda namespace: namespaces.append(namespace),
     )
     monkeypatch.setattr(
