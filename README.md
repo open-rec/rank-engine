@@ -89,6 +89,9 @@ docker compose -f docker-compose.cluster.yml -f docker-compose.gpu.yml up -d --b
 
 `MODEL_DEVICE=auto` selects CUDA when available and otherwise falls back to CPU. Keep one worker
 unless each worker having its own model and feature cache is intentional.
+LR/FM use batched CUDA inference when a GPU is visible to PyTorch, or CPU snapshot
+projections otherwise. LightGBM scoring always uses CPU, independently of this setting.
+An explicit `MODEL_DEVICE=cuda` still fails if CUDA is unavailable; use `auto` for fallback.
 
 Regional registries and Python package mirrors can be selected without editing repository files:
 

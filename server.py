@@ -95,7 +95,10 @@ def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def model_device():
+def model_device(model_type=None):
+    """Prefer CUDA for tensor models; this tree scorer always runs on CPU."""
+    if model_type == "lightgbm":
+        return torch.device("cpu")
     configured = Config.MODEL.DEVICE
     if configured == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -340,7 +343,7 @@ def _load_model(info, persist=True, expected_target=None):
                 % (declared_model_type, model_type)
             )
         effective_dim = snapshot["dim"] if feature_file else info.dim
-        device = model_device()
+        device = model_device(model_type)
         kwargs = {}
         if model_type == "lightgbm":
             loaded_model = model_func_map[model_type].load(info.model)
