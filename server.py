@@ -26,6 +26,7 @@ from error_code import ErrorCode, ReException
 from model import model_func_map
 from proto import Model, ReResponse, UserItems
 from service.feature_service import FeatureService
+from service.inference import prepare_inference
 from util.redis_util import get_redis_client
 
 app = FastAPI(title="OpenRec Rank Engine", version="0.1.0")
@@ -366,6 +367,7 @@ def _load_model(info, persist=True, expected_target=None):
             loaded_model.load_state_dict(state)
             loaded_model.to(device)
             loaded_model.eval()
+        prepare_inference(loaded_model, snapshot)
         snapshot["loaded_at"] = time.monotonic()
         loaded_model.feature_snapshot = snapshot
         loaded_info = {
@@ -438,6 +440,7 @@ def _refresh_features(target, force=False):
         )
         if prepared["dim"] != active.dim:
             raise ValueError("refreshed features do not match model dimension")
+        prepare_inference(active, prepared)
         prepared["loaded_at"] = time.monotonic()
         with model_lock:
             if active is not (user_model if target == "user" else model):
@@ -550,13 +553,10 @@ def score(user_items: UserItems):
                 user_items.user_id, namespace=target_type
             )
         )
-        batch_features = []
+        candidate_features = []
         item_score_map = {}
         hit_items = []
-        from algorithm.feature.context_feature import materialize_request_context
-        dynamic_contexts = materialize_request_context(
-            user_items.context, candidate_ids,
-            user_items.context.get("request_time"), user_items.candidate_contexts)
+        hit_positions = []
         for position, item_id in enumerate(candidate_ids):
             item_features = (
                 snapshot["items"].get(item_id)
@@ -572,38 +572,61 @@ def score(user_items: UserItems):
             if item_features is None:
                 item_score_map[item_id] = 0.0
                 continue
-            effective_user = user_features
-            if effective_user is None:
-                width = space.user_width if space is not None else (
-                    current_model.dim - item_features.size)
-                effective_user = np.zeros(width)
-            parts = [effective_user, item_features]
+            candidate_features.append(item_features)
+            hit_items.append(item_id)
+            hit_positions.append(position)
+        if hit_items:
+            dynamic_parts = []
+            if space is not None and (space.context_width or space.interaction_width):
+                from algorithm.feature.context_feature import materialize_request_context
+                # Positions and counts refer to the full request, including
+                # missing candidates. Encode all hit rows in one batch.
+                contexts = materialize_request_context(
+                    user_items.context, candidate_ids,
+                    user_items.context.get("request_time"),
+                    user_items.candidate_contexts,
+                ).iloc[hit_positions]
+                if space.context_width:
+                    dynamic_parts.append(space.transform_contexts(contexts))
+                if space.interaction_width:
+                    dynamic_parts.append(space.transform_interactions(contexts))
+            scorer = snapshot.get("scorer") if snapshot is not None else None
+            if scorer is not None:
+                scores = scorer.score(
+                    user_items.user_id, hit_items, user_items.session_id, dynamic_parts
+                )
+                item_score_map.update(zip(hit_items, scores))
+                return response(item_score_map)
+            item_width = candidate_features[0].size
+            user_width = (space.user_width if space is not None
+                          else current_model.dim - item_width)
+            if user_features is None:
+                user_features = np.zeros(user_width, dtype=np.float32)
+            parts = [user_features, np.asarray(candidate_features, dtype=np.float32)]
             if space is not None:
                 session = snapshot.get("sessions", {}).get(user_items.session_id)
                 if session is None:
-                    session = np.zeros(space.session_width)
+                    session = np.zeros(space.session_width, dtype=np.float32)
                 parts.append(session)
-                row = dynamic_contexts.iloc[[position]]
-                parts.append(space.transform_contexts(row)[0])
-                # Candidate-specific interaction values use the same envelope.
-                parts.append(space.transform_interactions(row)[0])
-            features = np.concatenate(parts)
-            if features.size != current_model.dim:
-                raise ValueError(
-                    "feature dimension does not match loaded model"
-                )
-            batch_features.append(features.astype(np.float32, copy=False))
-            hit_items.append(item_id)
-        if batch_features:
-            matrix = np.stack(batch_features)
+                parts.extend(dynamic_parts)
+            if sum(part.shape[-1] for part in parts) != current_model.dim:
+                raise ValueError("feature dimension does not match loaded model")
+            # Broadcast shared vectors and cast directly into one float32
+            # allocation instead of concatenating and copying each row.
+            matrix = np.empty((len(hit_items), current_model.dim), dtype=np.float32)
+            offset = 0
+            for part in parts:
+                width = part.shape[-1]
+                matrix[:, offset:offset + width] = part
+                offset += width
             if (current_info or {}).get("type") == "lightgbm":
                 scores = current_model.predict_proba(matrix).reshape(-1).tolist()
             else:
                 device = next(current_model.parameters()).device
-                with torch.no_grad():
+                with torch.inference_mode():
                     scores = (
                         current_model(
-                            torch.tensor(matrix, dtype=torch.float32, device=device)
+                            torch.from_numpy(matrix).to(device)
                         )
                         .reshape(-1)
                         .tolist()

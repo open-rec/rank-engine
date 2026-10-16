@@ -173,6 +173,16 @@ materialized online values. This is a presence check, not a freshness or coverag
 Each scoring request uses a consistent model and encoded-feature snapshot, including
 during concurrent publication or refresh. Failed refresh keeps the previous snapshot.
 
+CPU LR/FM models with a fitted sidecar precompute static user, candidate and session
+projections when loading or refreshing a snapshot. Requests combine these projections
+with batch-encoded context/interaction features; FM preserves interactions across all
+feature roles. The additional numeric cache uses one float32 per entity for LR and
+`factor_dim + 2` for FM, plus entity lookup indexes. Publication and refresh rebuild the
+cache before activation. CUDA, LightGBM and legacy models use batched feature matrices;
+CPU PyTorch inputs share the assembled NumPy buffer. No additional runtime dependency
+or checkpoint conversion is required. Floating-point reassociation can produce small
+score differences from the original dense evaluation.
+
 Offline sample validation, point-in-time joins, FeatureSpace fitting and evaluation
 gates are documented in [rec-algorithm](../rec-algorithm/README.md). Rank-engine only
 loads the resulting checkpoint and fitted sidecar for online scoring.
