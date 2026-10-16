@@ -10,7 +10,7 @@ import server
 
 
 @pytest.mark.parametrize("available,expected", [(False, "cpu"), (True, "cuda")])
-@pytest.mark.parametrize("kind", ["lr", "fm"])
+@pytest.mark.parametrize("kind", ["lr", "fm", "lightgbm"])
 def test_auto_selects_available_device(monkeypatch, available, expected, kind):
     monkeypatch.setattr(server.Config.MODEL, "DEVICE", "auto")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
@@ -28,14 +28,6 @@ def test_explicit_cuda_still_reports_missing_gpu(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="no CUDA device"):
         server.model_device("lr")
-
-
-@pytest.mark.parametrize("configured", ["auto", "cpu", "cuda:0"])
-def test_lightgbm_does_not_require_cuda(monkeypatch, configured):
-    monkeypatch.setattr(server.Config.MODEL, "DEVICE", configured)
-    monkeypatch.setattr(torch.cuda, "is_available",
-                        lambda: pytest.fail("CPU tree inference must not probe CUDA"))
-    assert server.model_device("lightgbm") == torch.device("cpu")
 
 
 @pytest.mark.parametrize("kind,model_class", [("lr", LRModel), ("fm", FMModel)])

@@ -27,6 +27,7 @@ from model import model_func_map
 from proto import Model, ReResponse, UserItems
 from service.feature_service import FeatureService
 from service.inference import prepare_inference
+from service.lightgbm_inference import LightGBMGPUModel
 from util.redis_util import get_redis_client
 
 app = FastAPI(title="OpenRec Rank Engine", version="0.1.0")
@@ -96,9 +97,7 @@ def metrics():
 
 
 def model_device(model_type=None):
-    """Prefer CUDA for tensor models; this tree scorer always runs on CPU."""
-    if model_type == "lightgbm":
-        return torch.device("cpu")
+    """Select the same automatic CUDA/CPU policy for all ranking models."""
     configured = Config.MODEL.DEVICE
     if configured == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -352,6 +351,8 @@ def _load_model(info, persist=True, expected_target=None):
                     "LightGBM model features do not match the feature dimension"
                 )
             loaded_model.dim = effective_dim
+            if device.type == "cuda":
+                loaded_model = LightGBMGPUModel(loaded_model, info.model, device)
         else:
             state = torch.load(info.model, map_location=device)
         if model_type == "fm":
@@ -379,7 +380,7 @@ def _load_model(info, persist=True, expected_target=None):
             "path": info.model,
             "feature": str(feature_file) if feature_file else None,
             "dim": effective_dim,
-            "device": "cpu" if model_type == "lightgbm" else str(device),
+            "device": str(device),
             "feature_set": snapshot.get("feature_set"),
             "catalog_version": snapshot.get("catalog_version"),
             "catalog_sha256": snapshot.get("catalog_sha256"),

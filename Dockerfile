@@ -13,14 +13,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     RANK_PORT=8123
 
 WORKDIR /opt/openrec/rank-engine
-COPY requirements.txt requirements-common.txt ./
-# Torch and CUDA come from the base image. Fail before downloading dependencies
-# if an override supplies a different runtime; never upgrade Torch here.
-RUN python -c "import torch; assert torch.__version__.split('+')[0] == '2.10.0'; assert torch.version.cuda == '12.8'" \
+COPY requirements.txt requirements-common.txt requirements-cuda.txt ./
+# Reuse the existing base image, then upgrade its Python runtime to cu129.
+# Resolve Torch and nvForest together so both use the same CUDA libraries.
+RUN python -c "import torch; assert torch.__version__.split('+')[0] == '2.10.0'; assert torch.version.cuda in ('12.8', '12.9')" \
     && pip uninstall -y torchaudio torchvision \
-    && pip install --no-cache-dir -r requirements-common.txt \
+    && pip install --no-cache-dir -r requirements-cuda.txt \
     && pip check \
-    && python -c "import torch, lightgbm; assert torch.__version__.split('+')[0] == '2.10.0'"
+    && python -c "import torch, lightgbm, nvforest; assert torch.__version__ == '2.10.0+cu129'; assert torch.version.cuda == '12.9'"
 COPY --from=algorithm . /tmp/rec-algorithm
 RUN pip install --no-cache-dir /tmp/rec-algorithm && rm -rf /tmp/rec-algorithm
 COPY . ./

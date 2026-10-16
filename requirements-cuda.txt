@@ -1,0 +1,9 @@
+# One CUDA 12.9 runtime for PyTorch and nvForest (Linux, Python 3.11+).
+--extra-index-url https://download.pytorch.org/whl/cu129
+-r requirements.txt
+torch==2.10.0+cu129
+nvforest-cu12==26.4.0
+cupy-cuda12x==13.6.0
+# Match the CUDA libraries pinned by the PyTorch cu129 wheel.
+cuda-python==12.9.4
+cuda-toolkit==12.9.1.0

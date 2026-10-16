@@ -71,9 +71,10 @@ docker compose -f docker-compose.cluster.yml up -d --build
 curl http://127.0.0.1:8123/health
 ```
 
-The compose build starts from the official PyTorch 2.10.0 CUDA 12.8 runtime image.
-Its preinstalled Torch satisfies `torch==2.10.0`, so installing the repository requirements
-does not upgrade Torch or replace its CUDA dependencies. The initial base-image pull is still large.
+The compose build reuses the official PyTorch 2.10.0 CUDA 12.8 base image and upgrades
+its Python runtime to `torch==2.10.0+cu129` with CUDA 12.9 libraries. nvForest and
+PyTorch share this environment; no separate inference process is needed. The first
+build downloads the replacement Torch/CUDA wheels as well as the tree inference libraries.
 The image uses Ubuntu system Python; pip installation is explicitly enabled inside
 the container with `PIP_BREAK_SYSTEM_PACKAGES=1`. It
 uses the sibling `rec-algorithm` directory as a BuildKit additional context, joins
@@ -90,8 +91,19 @@ docker compose -f docker-compose.cluster.yml -f docker-compose.gpu.yml up -d --b
 `MODEL_DEVICE=auto` selects CUDA when available and otherwise falls back to CPU. Keep one worker
 unless each worker having its own model and feature cache is intentional.
 LR/FM use batched CUDA inference when a GPU is visible to PyTorch, or CPU snapshot
-projections otherwise. LightGBM scoring always uses CPU, independently of this setting.
+projections otherwise. LightGBM uses nvForest GPU inference when CUDA is available,
+and its native CPU predictor otherwise. GPU LightGBM uses double precision to preserve
+tree thresholds and probability accuracy. The adapter preserves per-split missing-value
+semantics (including `zero_as_missing`) and applies the original double-precision sigmoid
+to GPU-computed margins, avoiding the importer's float32 sigmoid parameter. This does not guarantee bitwise identical
+scores or a speedup for every batch size. `/model/load` and `/health` report the selected
+device. GPU model initialization must succeed before activation; a failure retains the
+previous model instead of silently running the new model on CPU.
 An explicit `MODEL_DEVICE=cuda` still fails if CUDA is unavailable; use `auto` for fallback.
+For GPU inference outside Docker, install `pip install -r requirements-cuda.txt` in a
+Linux/Python 3.11+ environment with a CUDA 12.9 compatible driver. CPU-only installations
+can continue using `requirements.txt`. GPU containers require the GPU Compose override
+above to expose the host GPU. Standalone does not deploy rank-engine.
 
 Regional registries and Python package mirrors can be selected without editing repository files:
 
@@ -103,9 +115,10 @@ docker compose -f docker-compose.cluster.yml build rank-engine
 
 For a build using a complete local wheel cache, pass the Docker build arguments
 `PIP_FIND_LINKS` (a wheel index reachable from the build) and `PIP_NO_INDEX=1`.
-The build validates the preinstalled Torch 2.10.0 / CUDA 12.8 runtime before installing
-`requirements-common.txt`, then checks dependency compatibility,
-and verifies that PyTorch 2.10.0 and LightGBM import successfully. The base image's
+The build validates the base Torch 2.10.0 / CUDA 12.8 runtime before installing
+`requirements-cuda.txt`, then runs `pip check` and verifies Torch 2.10.0+cu129,
+LightGBM and nvForest. CUDA toolkit and Python binding versions are pinned to match
+the Torch wheel and prevent transitive CUDA upgrades. The base image's
 unused torchvision and torchaudio packages are removed to avoid unrelated dependency constraints.
 
 For a host-side `rec-server`, use:
@@ -182,8 +195,8 @@ with batch-encoded context/interaction features; FM preserves interactions acros
 feature roles. The additional numeric cache uses one float32 per entity for LR and
 `factor_dim + 2` for FM, plus entity lookup indexes. Publication and refresh rebuild the
 cache before activation. CUDA, LightGBM and legacy models use batched feature matrices;
-CPU PyTorch inputs share the assembled NumPy buffer. No additional runtime dependency
-or checkpoint conversion is required. Floating-point reassociation can produce small
+CPU PyTorch inputs share the assembled NumPy buffer. These CPU optimizations require
+no additional dependency or checkpoint conversion. Floating-point reassociation can produce small
 score differences from the original dense evaluation.
 
 Offline sample validation, point-in-time joins, FeatureSpace fitting and evaluation
