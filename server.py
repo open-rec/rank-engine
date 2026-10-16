@@ -1,15 +1,9 @@
-import json
 import logging
 import os
-import tempfile
-import threading
 import time
-from pathlib import Path
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
-import numpy as np
-import torch
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from prometheus_client import (
@@ -20,27 +14,18 @@ from prometheus_client import (
     generate_latest,
 )
 
-from algorithm.utils.file_util import resolve_feature_file
 from config import Config
 from error_code import ErrorCode, ReException
-from model import model_func_map
 from proto import Model, ReResponse, UserItems
 from service.feature_service import FeatureService
-from service.inference import prepare_inference
-from service.lightgbm_inference import LightGBMGPUModel
+from service.model_service import ModelService
+from service.inference_service import InferenceService
 from util.redis_util import get_redis_client
 
 app = FastAPI(title="OpenRec Rank Engine", version="0.1.0")
-model = None
-model_info = None
-user_model = None
-user_model_info = None
-model_lock = threading.RLock()
-load_lock = threading.RLock()
-refresh_lock = threading.Lock()
-refresh_workers = {}
-refresh_attempts = {}
 feature_service = FeatureService()
+model_service = ModelService(feature_service)
+inference_service = InferenceService(model_service, feature_service)
 request_count = Counter(
     "openrec_rank_requests",
     "Rank Engine requests",
@@ -89,23 +74,11 @@ async def observe_request(request: Request, call_next):
 
 @app.get("/metrics")
 def metrics():
-    with model_lock:
-        model_loaded.set(1 if model is not None else 0)
-        models_loaded.labels("item").set(int(model is not None))
-        models_loaded.labels("user").set(int(user_model is not None))
+    with model_service.model_lock:
+        model_loaded.set(int(model_service.current("item") is not None))
+        for target in ("item", "user"):
+            models_loaded.labels(target).set(int(model_service.current(target) is not None))
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-def model_device(model_type=None):
-    """Select the same automatic CUDA/CPU policy for all ranking models."""
-    configured = Config.MODEL.DEVICE
-    if configured == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if configured.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError(
-            "MODEL_DEVICE requests CUDA but no CUDA device is available"
-        )
-    return torch.device(configured)
 
 
 def response(data=None, message=""):
@@ -149,121 +122,7 @@ async def unknown_exception_handler(request: Request, exception: Exception):
 
 @app.on_event("startup")
 def startup():
-    for directory in (
-        Path(Config.MODEL.ROOT) / "training",
-        Path(Config.MODEL.ROOT) / "releases",
-    ):
-        directory.mkdir(parents=True, exist_ok=True)
-        directory.chmod(0o777 if directory.name == "training" else 0o755)
-    failures = []
-    for target_type in ("item", "user"):
-        try:
-            _restore_model(target_type)
-        except Exception as error:
-            logging.exception("automatic %s model load failed", target_type)
-            failures.append(error)
-    if failures and Config.MODEL.REQUIRED:
-        raise failures[0]
-
-
-def _state_path(target_type):
-    return Path(Config.MODEL.STATE_DIR) / (target_type + ".json")
-
-
-def _bootstrap_model_info(target_type):
-    model_path = (
-        Config.MODEL.USER_PATH if target_type == "user" else Config.MODEL.PATH
-    )
-    if not model_path:
-        return None
-    feature = (
-        Config.MODEL.USER_FEATURE_PATH
-        if target_type == "user"
-        else Config.MODEL.FEATURE_PATH
-    )
-    return Model(
-        type=Config.MODEL.TYPE,
-        model=model_path,
-        feature=feature,
-        dim=Config.MODEL.DIM,
-    )
-
-
-def _restore_model(target_type):
-    # Serialize recovery with publication and recheck after waiting for another
-    # load.
-    with load_lock:
-        with model_lock:
-            current = user_model if target_type == "user" else model
-            if current is not None:
-                return
-        path = _state_path(target_type)
-        if path.exists():
-            try:
-                saved = json.loads(path.read_text())
-                if (
-                    saved["schema_version"] != 1
-                    or saved["target_type"] != target_type
-                ):
-                    raise ValueError("invalid persisted model state")
-                info = Model(**saved["load"])
-                return _load_model(
-                    info, persist=False, expected_target=target_type
-                )
-            except Exception:
-                logging.exception(
-                    "persisted %s model is unusable; falling back to bootstrap",
-                    target_type,
-                )
-                info = _bootstrap_model_info(target_type)
-                if info is None:
-                    raise
-                # Replace the stale state only after the bootstrap model has
-                # loaded successfully. A transient failure keeps the published
-                # state available for a later retry.
-                return _load_model(
-                    info, persist=True, expected_target=target_type
-                )
-        info = _bootstrap_model_info(target_type)
-        if info is not None:
-            return _load_model(info, persist=False, expected_target=target_type)
-
-
-def _persist_model(info, loaded_info):
-    target_type = loaded_info["target_type"]
-    path = _state_path(target_type)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    load = {
-        "type": loaded_info["type"],
-        "model": str(Path(info.model).resolve()),
-        "feature": (
-            str(Path(loaded_info["feature"]).resolve())
-            if loaded_info["feature"]
-            else None
-        ),
-        "dim": loaded_info["dim"],
-        "factor_dim": loaded_info.get("factor_dim"),
-    }
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=path.parent, delete=False
-        ) as stream:
-            temporary = Path(stream.name)
-            json.dump(
-                {
-                    "schema_version": 1,
-                    "target_type": target_type,
-                    "load": load,
-                },
-                stream,
-            )
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    model_service.startup()
 
 
 @app.get("/")
@@ -277,14 +136,16 @@ def health():
         redis_ok = bool(get_redis_client().ping())
     except Exception:
         redis_ok = False
-    with model_lock:
-        loaded = model is not None
-        current = model_info
-        user_loaded = user_model is not None
-        user_current = user_model_info
+    with model_service.model_lock:
+        item_runtime = model_service.current("item")
+        user_runtime = model_service.current("user")
+        loaded = item_runtime is not None
+        current = item_runtime.info if loaded else None
+        user_loaded = user_runtime is not None
+        user_current = user_runtime.info if user_loaded else None
         features = feature_service.stats()
     required = {"item"}
-    if Config.MODEL.USER_PATH or _state_path("user").exists() or user_loaded:
+    if Config.MODEL.USER_PATH or model_service.state_path("user").exists() or user_loaded:
         required.add("user")
     target_ready = {}
     for target, present, info in (
@@ -318,94 +179,10 @@ def health():
     )
 
 
-def _load_model(info, persist=True, expected_target=None):
-    global model, model_info, user_model, user_model_info
-    model_type = info.type.strip().lower()
-    if model_type not in model_func_map:
-        raise ReException(ErrorCode.INVALID_MODEL)
-    with load_lock:
-        feature_file = info.feature or resolve_feature_file(info.model)
-        snapshot = feature_service.prepare_all_features(
-            str(feature_file) if feature_file else None
-        )
-        target_type = snapshot.get("target_type", "item")
-        if target_type not in ("item", "user") or (
-            expected_target and target_type != expected_target
-        ):
-            raise ValueError(
-                "feature space target does not match requested model"
-            )
-        declared_model_type = snapshot.get("model_type")
-        if declared_model_type and declared_model_type != model_type:
-            raise ValueError(
-                "feature space belongs to %s, not %s"
-                % (declared_model_type, model_type)
-            )
-        effective_dim = snapshot["dim"] if feature_file else info.dim
-        device = model_device(model_type)
-        kwargs = {}
-        if model_type == "lightgbm":
-            loaded_model = model_func_map[model_type].load(info.model)
-            if loaded_model.booster.num_feature() != effective_dim:
-                raise ValueError(
-                    "LightGBM model features do not match the feature dimension"
-                )
-            loaded_model.dim = effective_dim
-            if device.type == "cuda":
-                loaded_model = LightGBMGPUModel(loaded_model, info.model, device)
-        else:
-            state = torch.load(info.model, map_location=device)
-        if model_type == "fm":
-            factors = state.get("factors")
-            if (
-                factors is None
-                or factors.ndim != 2
-                or factors.shape[0] != effective_dim
-            ):
-                raise ValueError(
-                    "FM checkpoint factors do not match the feature dimension"
-                )
-            kwargs["factor_dim"] = info.factor_dim or factors.shape[1]
-        if model_type != "lightgbm":
-            loaded_model = model_func_map[model_type](effective_dim, **kwargs)
-            loaded_model.load_state_dict(state)
-            loaded_model.to(device)
-            loaded_model.eval()
-        prepare_inference(loaded_model, snapshot)
-        snapshot["loaded_at"] = time.monotonic()
-        loaded_model.feature_snapshot = snapshot
-        loaded_info = {
-            "feature_selection": snapshot.get("feature_selection"),
-            "type": model_type,
-            "path": info.model,
-            "feature": str(feature_file) if feature_file else None,
-            "dim": effective_dim,
-            "device": str(device),
-            "feature_set": snapshot.get("feature_set"),
-            "catalog_version": snapshot.get("catalog_version"),
-            "catalog_sha256": snapshot.get("catalog_sha256"),
-            "target_type": snapshot.get("target_type", "item"),
-            **(
-                {"factor_dim": loaded_model.factor_dim}
-                if model_type == "fm"
-                else {}
-            ),
-        }
-        with model_lock:
-            if persist:
-                _persist_model(info, loaded_info)
-            feature_service.activate(snapshot)
-            if snapshot.get("target_type", "item") == "user":
-                user_model, user_model_info = loaded_model, loaded_info
-            else:
-                model, model_info = loaded_model, loaded_info
-    return loaded_info
-
-
 @app.post("/model/load")
 def load_model(info: Model):
     try:
-        return response(_load_model(info))
+        return response(model_service.load(info))
     except ReException:
         raise
     except FileNotFoundError:
@@ -419,227 +196,22 @@ def load_model(info: Model):
 def refresh_features():
     try:
         for target in ("item", "user"):
-            _refresh_features(target, force=True)
+            model_service.refresh_features(target, force=True)
         return response(feature_service.stats())
     except Exception:
         logging.exception("feature refresh failed")
         raise ReException(ErrorCode.LOAD_MODEL_FAILED)
 
 
-def _refresh_features(target, force=False):
-    # Use the publication lock while preparing; inference retains its old
-    # snapshot.
-    with load_lock:
-        with model_lock:
-            active = user_model if target == "user" else model
-            snapshot = getattr(active, "feature_snapshot", None)
-        if snapshot is None or not snapshot.get("feature_file"):
-            return
-        age = time.monotonic() - snapshot.get("loaded_at", 0)
-        seconds = Config.MODEL.FEATURE_REFRESH_SECONDS
-        if not force and (seconds <= 0 or age < seconds):
-            return
-        prepared = feature_service.prepare_all_features(
-            snapshot["feature_file"]
-        )
-        if prepared["dim"] != active.dim:
-            raise ValueError("refreshed features do not match model dimension")
-        prepare_inference(active, prepared)
-        prepared["loaded_at"] = time.monotonic()
-        with model_lock:
-            if active is not (user_model if target == "user" else model):
-                return
-            feature_service.activate(prepared)
-            active.feature_snapshot = prepared
-
-
-def _schedule_feature_refresh(target):
-    """Serve the current snapshot while one bounded worker refreshes each target."""
-    with model_lock:
-        active = user_model if target == "user" else model
-        snapshot = getattr(active, "feature_snapshot", None)
-    seconds = Config.MODEL.FEATURE_REFRESH_SECONDS
-    now = time.monotonic()
-    if (
-        not snapshot
-        or not snapshot.get("feature_file")
-        or seconds <= 0
-        or now - snapshot.get("loaded_at", 0) < seconds
-    ):
-        return
-    with refresh_lock:
-        if target in refresh_workers:
-            return
-        previous_model, attempted_at = refresh_attempts.get(target, (None, 0))
-        if previous_model is active and now - attempted_at < seconds:
-            return
-        refresh_attempts[target] = (active, now)
-
-        def refresh():
-            try:
-                _refresh_features(target)
-            except Exception:
-                logging.exception(
-                    "feature refresh failed; retaining last usable snapshot"
-                )
-            finally:
-                with refresh_lock:
-                    refresh_workers.pop(target, None)
-
-        worker = threading.Thread(
-            target=refresh, name=f"feature-refresh-{target}", daemon=True
-        )
-        refresh_workers[target] = worker
-        try:
-            worker.start()
-        except Exception:
-            refresh_workers.pop(target, None)
-            raise
-
-
 @app.post("/clean")
 def clean():
-    global model, model_info, user_model, user_model_info
-    with model_lock:
-        model = None
-        model_info = None
-        user_model = None
-        user_model_info = None
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    model_service.clean()
     return response(message="model unloaded")
 
 
 @app.post("/model/score")
 def score(user_items: UserItems):
-    with model_lock:
-        current_model = (
-            user_model if user_items.target_type == "user" else model
-        )
-        current_info = (
-            user_model_info if user_items.target_type == "user" else model_info
-        )
-    if current_model is None:
-        try:
-            _restore_model(user_items.target_type)
-            with model_lock:
-                current_model = (
-                    user_model if user_items.target_type == "user" else model
-                )
-                current_info = (
-                    user_model_info
-                    if user_items.target_type == "user"
-                    else model_info
-                )
-        except Exception:
-            logging.exception("lazy model load failed")
-    if current_model is None:
-        raise ReException(ErrorCode.MODEL_NOT_LOAD_YET)
-    candidate_ids = user_items.candidate_ids or user_items.item_ids
-    target_type = (current_info or {}).get("target_type", "item")
-    if user_items.target_type != target_type:
-        raise ReException(ErrorCode.INVALID_MODEL)
-    if not candidate_ids:
-        return response({})
-    try:
-        try:
-            _schedule_feature_refresh(target_type)
-        except Exception:
-            logging.exception(
-                "feature refresh failed; retaining last usable snapshot"
-            )
-        snapshot = getattr(current_model, "feature_snapshot", None)
-        space = snapshot.get("space") if snapshot is not None else None
-        user_features = (
-            snapshot["users"].get(user_items.user_id)
-            if snapshot is not None
-            else feature_service.get_user_feature_by_id(
-                user_items.user_id, namespace=target_type
-            )
-        )
-        candidate_features = []
-        item_score_map = {}
-        hit_items = []
-        hit_positions = []
-        for position, item_id in enumerate(candidate_ids):
-            item_features = (
-                snapshot["items"].get(item_id)
-                if snapshot is not None
-                else (
-                    feature_service.get_item_feature_by_id(item_id)
-                    if target_type == "item"
-                    else feature_service.get_candidate_user_feature_by_id(
-                        item_id
-                    )
-                )
-            )
-            if item_features is None:
-                item_score_map[item_id] = 0.0
-                continue
-            candidate_features.append(item_features)
-            hit_items.append(item_id)
-            hit_positions.append(position)
-        if hit_items:
-            dynamic_parts = []
-            if space is not None and (space.context_width or space.interaction_width):
-                from algorithm.feature.context_feature import materialize_request_context
-                # Positions and counts refer to the full request, including
-                # missing candidates. Encode all hit rows in one batch.
-                contexts = materialize_request_context(
-                    user_items.context, candidate_ids,
-                    user_items.context.get("request_time"),
-                    user_items.candidate_contexts,
-                ).iloc[hit_positions]
-                if space.context_width:
-                    dynamic_parts.append(space.transform_contexts(contexts))
-                if space.interaction_width:
-                    dynamic_parts.append(space.transform_interactions(contexts))
-            scorer = snapshot.get("scorer") if snapshot is not None else None
-            if scorer is not None:
-                scores = scorer.score(
-                    user_items.user_id, hit_items, user_items.session_id, dynamic_parts
-                )
-                item_score_map.update(zip(hit_items, scores))
-                return response(item_score_map)
-            item_width = candidate_features[0].size
-            user_width = (space.user_width if space is not None
-                          else current_model.dim - item_width)
-            if user_features is None:
-                user_features = np.zeros(user_width, dtype=np.float32)
-            parts = [user_features, np.asarray(candidate_features, dtype=np.float32)]
-            if space is not None:
-                session = snapshot.get("sessions", {}).get(user_items.session_id)
-                if session is None:
-                    session = np.zeros(space.session_width, dtype=np.float32)
-                parts.append(session)
-                parts.extend(dynamic_parts)
-            if sum(part.shape[-1] for part in parts) != current_model.dim:
-                raise ValueError("feature dimension does not match loaded model")
-            # Broadcast shared vectors and cast directly into one float32
-            # allocation instead of concatenating and copying each row.
-            matrix = np.empty((len(hit_items), current_model.dim), dtype=np.float32)
-            offset = 0
-            for part in parts:
-                width = part.shape[-1]
-                matrix[:, offset:offset + width] = part
-                offset += width
-            if (current_info or {}).get("type") == "lightgbm":
-                scores = current_model.predict_proba(matrix).reshape(-1).tolist()
-            else:
-                device = next(current_model.parameters()).device
-                with torch.inference_mode():
-                    scores = (
-                        current_model(
-                            torch.from_numpy(matrix).to(device)
-                        )
-                        .reshape(-1)
-                        .tolist()
-                    )
-            item_score_map.update(zip(hit_items, scores))
-        return response(item_score_map)
-    except Exception:
-        logging.exception("inference failed")
-        raise ReException(ErrorCode.INFERENCE_FAILED)
+    return response(inference_service.score(user_items))
 
 
 if __name__ == "__main__":

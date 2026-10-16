@@ -77,19 +77,3 @@ class ProjectedScorer:
             logits += .5 * (np.square(projected[:, 2:]).sum(axis=1) - projected[:, 1])
         with torch.inference_mode():
             return torch.sigmoid(torch.from_numpy(logits)).tolist()
-
-
-def prepare_inference(model, snapshot):
-    """Prepare before activation; readers keep using their previous snapshot.
-
-    Legacy snapshots, tree models and CUDA retain the batched model path.
-    Exact types avoid bypassing a custom model's forward implementation.
-    """
-    space = snapshot.get("space")
-    if (type(model) not in (LRModel, FMModel)
-            or next(model.parameters()).device.type != "cpu"
-            or space is None or snapshot.get("dim") != model.dim):
-        return
-    if space.dim != model.dim:
-        raise ValueError("feature dimension does not match loaded model")
-    snapshot["scorer"] = ProjectedScorer(model, snapshot)

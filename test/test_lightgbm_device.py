@@ -5,8 +5,10 @@ import pytest
 import torch
 
 from proto import Model, UserItems
-from service.lightgbm_inference import LightGBMGPUModel
+from models.lightgbm.predictor import LightGBMGPUModel
+from helpers import active_model, install_model
 import server
+import models.lightgbm.model as lightgbm_definition
 
 
 def test_gpu_initialization_failure_does_not_publish(monkeypatch, tmp_path):
@@ -20,15 +22,15 @@ def test_gpu_initialization_failure_does_not_publish(monkeypatch, tmp_path):
         "dim": 2, "users": {"u": np.zeros(1)}, "items": {"i": np.zeros(1)},
     })
     previous = object()
-    monkeypatch.setattr(server, "model", previous)
-    monkeypatch.setattr(server, "model_device", lambda kind: torch.device("cuda"))
+    install_model(previous, target="item")
+    monkeypatch.setattr(server.model_service, "select_device", lambda kind: torch.device("cuda"))
     def fail(*args):
         raise RuntimeError("GPU backend unavailable")
-    monkeypatch.setattr(server, "LightGBMGPUModel", fail)
+    monkeypatch.setattr(lightgbm_definition, "LightGBMGPUModel", fail)
     with pytest.raises(RuntimeError, match="GPU backend unavailable"):
-        server._load_model(Model(type="lightgbm", model=str(path), feature="features.json"))
-    assert server.model is previous
-    assert not server._state_path("item").exists()
+        server.model_service.load(Model(type="lightgbm", model=str(path), feature="features.json"))
+    assert active_model() is previous
+    assert not server.model_service.state_path("item").exists()
 
 
 @pytest.mark.parametrize("boosting", ["gbdt", "rf"])
@@ -58,23 +60,23 @@ def test_real_gpu_lightgbm_matches_cpu(monkeypatch, tmp_path, zero_as_missing, c
     snapshot = {"dim": 4, "users": {"u": np.zeros(0)},
                 "items": {str(i): row for i, row in enumerate(features)}, "sessions": {}}
     monkeypatch.setattr(server.feature_service, "prepare_all_features", lambda path: snapshot)
-    info = server._load_model(Model(type="lightgbm", model=str(path), feature="features.json"))
+    info = server.model_service.load(Model(type="lightgbm", model=str(path), feature="features.json"))
     assert info["device"] == "cuda"
-    assert isinstance(server.model, LightGBMGPUModel)
-    actual = server.model.predict_proba(features)
+    assert isinstance(active_model(), LightGBMGPUModel)
+    actual = active_model().predict_proba(features)
     expected = booster.predict(features)
     np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-12)
     scores = server.score(UserItems(user_id="u", item_ids=["0", "1", "missing"]))["data"]
     assert scores == pytest.approx({"0": expected[0], "1": expected[1], "missing": 0}, abs=1e-12)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(server.model.predict_proba, [features] * 8))
+        results = list(pool.map(active_model().predict_proba, [features] * 8))
     for result in results:
         np.testing.assert_allclose(result, expected, rtol=0, atol=1e-12)
     # A persisted release must choose the device again when restored.
-    server.model = None
-    server._restore_model("item")
-    assert isinstance(server.model, LightGBMGPUModel)
-    np.testing.assert_allclose(server.model.predict_proba(features), expected,
+    install_model(None, target="item")
+    server.model_service.restore("item")
+    assert isinstance(active_model(), LightGBMGPUModel)
+    np.testing.assert_allclose(active_model().predict_proba(features), expected,
                                rtol=0, atol=1e-12)
 
     probes = rng.normal(size=(300, 4)).astype(np.float64)
@@ -86,5 +88,5 @@ def test_real_gpu_lightgbm_matches_cpu(monkeypatch, tmp_path, zero_as_missing, c
     probes[200:, 2] = np.nan  # Missing values unseen in this training feature.
     if categorical:
         probes[:, 3] = np.resize([0, 1, 2, 3, 4, 99, -1, np.nan, -.5, 1.9], 300)
-    np.testing.assert_allclose(server.model.predict_proba(probes), booster.predict(probes),
+    np.testing.assert_allclose(active_model().predict_proba(probes), booster.predict(probes),
                                rtol=0, atol=1e-12)

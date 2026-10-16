@@ -7,6 +7,7 @@ from algorithm.rank.lr import LRModel
 from algorithm.rank.lightgbm import LightGBMBinaryModel
 from error_code import ErrorCode, ReException
 from proto import Model, UserItems
+from helpers import active_model, active_info, install_model, set_info
 import server
 
 
@@ -55,7 +56,7 @@ def test_load_model_activates_lr_and_fm_atomically(
     prepared = snapshot(4)
     activated = stub_feature_snapshot(monkeypatch, prepared)
 
-    result = server._load_model(
+    result = server.model_service.load(
         Model(type=model_type, model=str(model_file), feature="features.json")
     )
 
@@ -65,31 +66,31 @@ def test_load_model_activates_lr_and_fm_atomically(
     assert result["feature_set"] == "ranking-test-v1"
     assert result["catalog_version"] == 1
     assert activated == [prepared]
-    assert server.model is not checkpoint
-    assert not server.model.training
+    assert active_model() is not checkpoint
+    assert not active_model().training
     if model_type == "fm":
         assert result["factor_dim"] == 6
-        assert server.model.factor_dim == 6
+        assert active_model().factor_dim == 6
 
 
 def test_failed_fm_load_keeps_previous_model_and_feature_snapshot(
     tmp_path, monkeypatch
 ):
     previous = LRModel(dim=4)
-    server.model = previous
-    server.model_info = {"type": "lr", "dim": 4}
+    install_model(previous, target="item")
+    set_info({"type": "lr", "dim": 4}, target="item")
     invalid = FMModel(dim=5, factor_dim=3)
     model_file = tmp_path / "fm.pth"
     torch.save(invalid.state_dict(), model_file)
     activated = stub_feature_snapshot(monkeypatch, snapshot(4))
 
     with pytest.raises(ValueError, match="factors do not match"):
-        server._load_model(
+        server.model_service.load(
             Model(type="fm", model=str(model_file), feature="features.json")
         )
 
-    assert server.model is previous
-    assert server.model_info == {"type": "lr", "dim": 4}
+    assert active_model() is previous
+    assert active_info() == {"type": "lr", "dim": 4, "target_type": "item"}
     assert activated == []
 
 
@@ -102,7 +103,7 @@ def test_load_rejects_feature_space_for_another_model(tmp_path, monkeypatch):
     activated = stub_feature_snapshot(monkeypatch, prepared)
 
     with pytest.raises(ValueError, match="belongs to fm"):
-        server._load_model(
+        server.model_service.load(
             Model(type="lr", model=str(model_file), feature="features.json")
         )
 
@@ -118,7 +119,7 @@ def test_load_model_rejects_explicit_wrong_fm_factor_dim(
     activated = stub_feature_snapshot(monkeypatch, snapshot(4))
 
     with pytest.raises(RuntimeError, match="size mismatch"):
-        server._load_model(
+        server.model_service.load(
             Model(
                 type="fm",
                 model=str(model_file),
@@ -128,7 +129,7 @@ def test_load_model_rejects_explicit_wrong_fm_factor_dim(
         )
 
     assert activated == []
-    assert server.model is None
+    assert active_model() is None
 
 
 def test_load_endpoint_rejects_unknown_model_type():
@@ -151,7 +152,7 @@ def test_load_and_score_lightgbm(tmp_path, monkeypatch):
     prepared["model_type"] = "lightgbm"
     stub_feature_snapshot(monkeypatch, prepared)
 
-    loaded = server._load_model(
+    loaded = server.model_service.load(
         Model(type="lightgbm", model=str(path), feature="features.json")
     )
     result = server.score(UserItems(user_id="u1", item_ids=["i1"]))
@@ -192,7 +193,7 @@ def test_score_batches_known_items_and_degrades_missing_item(monkeypatch):
         scoring_model.linear.weight.fill_(0.1)
         scoring_model.linear.bias.zero_()
     scoring_model.eval()
-    server.model = scoring_model
+    install_model(scoring_model, target="item")
     configure_scoring_features(
         monkeypatch,
         np.array([1.0, 2.0], dtype=np.float32),
@@ -215,7 +216,7 @@ def test_score_unknown_user_uses_zero_user_vector(monkeypatch):
             torch.tensor([[10.0, 10.0, 1.0, 1.0]])
         )
         scoring_model.linear.bias.zero_()
-    server.model = scoring_model
+    install_model(scoring_model, target="item")
     configure_scoring_features(
         monkeypatch, None, {"i1": np.array([1.0, 2.0], dtype=np.float32)}
     )
@@ -230,7 +231,7 @@ def test_score_unknown_user_uses_zero_user_vector(monkeypatch):
 def test_score_dimension_mismatch_is_reported_as_inference_failure(
     monkeypatch,
 ):
-    server.model = LRModel(dim=4)
+    install_model(LRModel(dim=4), target="item")
     configure_scoring_features(
         monkeypatch,
         np.array([1.0], dtype=np.float32),
@@ -250,7 +251,7 @@ def test_score_without_loaded_model_is_rejected():
 
 
 def test_empty_item_list_does_not_touch_feature_store(monkeypatch):
-    server.model = LRModel(dim=4)
+    install_model(LRModel(dim=4), target="item")
     monkeypatch.setattr(
         server.feature_service,
         "refresh_if_stale",
@@ -264,12 +265,12 @@ def test_empty_item_list_does_not_touch_feature_store(monkeypatch):
 def test_user_target_scores_candidate_user_features(monkeypatch):
     scoring_model = LRModel(dim=4)
     scoring_model.eval()
-    server.user_model = scoring_model
-    server.user_model_info = {"target_type": "user"}
+    install_model(scoring_model, target="user")
+    set_info({"target_type": "user"}, target="user")
     namespaces = []
     monkeypatch.setattr(
-        server,
-        "_schedule_feature_refresh",
+        server.model_service,
+        "schedule_feature_refresh",
         lambda namespace: namespaces.append(namespace),
     )
     monkeypatch.setattr(

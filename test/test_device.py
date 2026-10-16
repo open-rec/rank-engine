@@ -6,6 +6,7 @@ from algorithm.feature.feature_space import ColumnSpec, FeatureSpace, NUM
 from algorithm.rank.fm import FMModel
 from algorithm.rank.lr import LRModel
 from proto import Model, UserItems
+from helpers import active_model
 import server
 
 
@@ -14,20 +15,20 @@ import server
 def test_auto_selects_available_device(monkeypatch, available, expected, kind):
     monkeypatch.setattr(server.Config.MODEL, "DEVICE", "auto")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
-    assert server.model_device(kind) == torch.device(expected)
+    assert server.model_service.select_device(kind) == torch.device(expected)
 
 
 def test_explicit_cpu_overrides_available_gpu(monkeypatch):
     monkeypatch.setattr(server.Config.MODEL, "DEVICE", "cpu")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    assert server.model_device("fm") == torch.device("cpu")
+    assert server.model_service.select_device("fm") == torch.device("cpu")
 
 
 def test_explicit_cuda_still_reports_missing_gpu(monkeypatch):
     monkeypatch.setattr(server.Config.MODEL, "DEVICE", "cuda:0")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="no CUDA device"):
-        server.model_device("lr")
+        server.model_service.select_device("lr")
 
 
 @pytest.mark.parametrize("kind,model_class", [("lr", LRModel), ("fm", FMModel)])
@@ -53,10 +54,10 @@ def test_auto_load_and_score_on_selected_device(
     checkpoint = model_class(2).eval()
     path = tmp_path / (kind + ".pth")
     torch.save(checkpoint.state_dict(), path)
-    info = server._load_model(Model(type=kind, model=str(path), feature="features.json"))
+    info = server.model_service.load(Model(type=kind, model=str(path), feature="features.json"))
     assert info["device"] == device
-    assert next(server.model.parameters()).device.type == device
-    assert ("scorer" in snapshot) == (device == "cpu")
+    assert next(active_model().parameters()).device.type == device
+    assert (server.model_service.current("item").executor.projected is not None) == (device == "cpu")
     with torch.inference_mode():
         expected = checkpoint(torch.tensor([[1.0, 2.0]])).item()
     actual = server.score(UserItems(user_id="u", item_ids=["i"]))["data"]["i"]

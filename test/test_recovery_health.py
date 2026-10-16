@@ -15,6 +15,7 @@ import uvicorn
 from algorithm.rank.fm import FMModel
 from algorithm.rank.lr import LRModel
 from proto import Model, UserItems
+from helpers import active_model, active_info, install_model
 import server
 
 
@@ -102,51 +103,51 @@ def test_restart_restores_last_publication_and_rollback(
     )
     server.clean()
     server.startup()
-    active = server.user_model_info if target == "user" else server.model_info
+    active = active_info("user") if target == "user" else active_info()
     assert active["path"] == info.model
     assert active["type"] == kind
     rolled_back = checkpoint(tmp_path, monkeypatch, target, kind, "rollback")
     server.load_model(rolled_back)
     server.clean()
     server.startup()
-    active = server.user_model_info if target == "user" else server.model_info
+    active = active_info("user") if target == "user" else active_info()
     assert active["path"] == rolled_back.model
 
 
 def test_failed_load_preserves_persisted_release(tmp_path, monkeypatch):
     info = checkpoint(tmp_path, monkeypatch)
     server.load_model(info)
-    previous = server._state_path("item").read_bytes()
+    previous = server.model_service.state_path("item").read_bytes()
     with pytest.raises(Exception):
         server.load_model(Model(model="missing.pth", feature=info.feature))
-    assert server._state_path("item").read_bytes() == previous
-    assert server.model_info["path"] == info.model
+    assert server.model_service.state_path("item").read_bytes() == previous
+    assert active_info()["path"] == info.model
 
 
 def test_failed_state_write_keeps_old_model(tmp_path, monkeypatch):
     info = checkpoint(tmp_path, monkeypatch)
     server.load_model(info)
-    previous = server.model
+    previous = active_model()
 
     def fail(*args):
         raise OSError("disk full")
 
-    monkeypatch.setattr(server, "_persist_model", fail)
+    monkeypatch.setattr(server.model_service, "_persist_model", fail)
     with pytest.raises(Exception):
         server.load_model(info)
-    assert server.model is previous
+    assert active_model() is previous
 
 
 def test_corrupt_state_falls_back_to_bootstrap(tmp_path, monkeypatch):
     info = checkpoint(tmp_path, monkeypatch)
     monkeypatch.setattr(server.Config.MODEL, "PATH", info.model)
     monkeypatch.setattr(server.Config.MODEL, "FEATURE_PATH", info.feature)
-    path = server._state_path("item")
+    path = server.model_service.state_path("item")
     path.parent.mkdir()
     path.write_text("broken json")
     server.startup()
-    assert server.model is not None
-    assert server.model_info["path"] == info.model
+    assert active_model() is not None
+    assert active_info()["path"] == info.model
     saved = json.loads(path.read_text())
     assert saved["load"]["model"] == str(Path(info.model).resolve())
 
@@ -162,8 +163,8 @@ def test_lazy_user_load_works_without_item_configuration(
     )
     assert result["status"] == "success"
     assert 0 < result["data"]["c"] < 1
-    assert server.model is None
-    assert server.user_model_info["target_type"] == "user"
+    assert active_model() is None
+    assert active_info("user")["target_type"] == "user"
 
 
 def test_startup_item_failure_does_not_skip_user(tmp_path, monkeypatch):
@@ -172,8 +173,8 @@ def test_startup_item_failure_does_not_skip_user(tmp_path, monkeypatch):
     monkeypatch.setattr(server.Config.MODEL, "USER_PATH", info.model)
     monkeypatch.setattr(server.Config.MODEL, "USER_FEATURE_PATH", info.feature)
     server.startup()
-    assert server.model is None
-    assert server.user_model is not None
+    assert active_model() is None
+    assert active_model("user") is not None
 
 
 def test_lazy_restore_retries_published_model_after_transient_failure(
@@ -189,7 +190,7 @@ def test_lazy_restore_retries_published_model_after_transient_failure(
 
     monkeypatch.setattr(server.feature_service, "prepare_all_features", fail)
     server.startup()
-    assert server.model is None
+    assert active_model() is None
     monkeypatch.setattr(
         server.feature_service, "prepare_all_features", original
     )
@@ -197,7 +198,7 @@ def test_lazy_restore_retries_published_model_after_transient_failure(
         server.score(UserItems(user_id="u", item_ids=["c"]))["status"]
         == "success"
     )
-    assert server.model_info["path"] == info.model
+    assert active_info()["path"] == info.model
 
 
 def test_health_readiness_and_both_targets(tmp_path, monkeypatch, client):
@@ -240,7 +241,7 @@ def test_http_200_business_failures_are_counted(monkeypatch, client):
 
 
 def test_metrics_report_each_target(client):
-    server.user_model = LRModel(4)
+    install_model(LRModel(4), target="user")
     body = client.get("/metrics").text
     assert 'openrec_rank_models_loaded{target_type="user"} 1.0' in body
     assert 'openrec_rank_models_loaded{target_type="item"} 0.0' in body
@@ -250,3 +251,45 @@ def test_online_service_does_not_expose_training(client):
     assert client.post("/model/train", json={}).status_code == 404
     assert client.get("/features").status_code == 404
     assert client.post("/features/validate", json={}).status_code == 404
+
+
+@pytest.mark.parametrize("target", ["item", "user"])
+@pytest.mark.parametrize("kind", ["lr", "fm", "lightgbm"])
+def test_http_load_score_refresh_clean_contract(tmp_path, monkeypatch, client, target, kind):
+    info = checkpoint(tmp_path, monkeypatch, target, kind)
+    if kind == "lightgbm":
+        from algorithm.rank.lightgbm import LightGBMBinaryModel
+        tree = LightGBMBinaryModel(n_estimators=2, min_child_samples=1).fit(
+            np.array([[0, 0, 0, 0], [1, 1, 1, 1]], dtype=np.float32), np.array([0, 1])
+        )
+        info.model = str(tmp_path / "tree.txt")
+        tree.save(info.model)
+    loaded = client.post("/model/load", json=info.model_dump())
+    assert loaded.status_code == 200
+    envelope = loaded.json()
+    assert set(envelope) == {"code", "status", "data", "message"}
+    assert envelope["code"] == 0 and envelope["status"] == "success"
+    expected_keys = {"feature_selection", "type", "path", "feature", "dim", "device",
+                     "feature_set", "catalog_version", "catalog_sha256", "target_type"}
+    if kind == "fm":
+        expected_keys.add("factor_dim")
+    assert set(envelope["data"]) == expected_keys
+    assert envelope["data"]["target_type"] == target
+    body = {"user_id": "u", "item_ids": ["c", "missing"], "target_type": target}
+    legacy = client.post("/model/score", json=body)
+    assert legacy.status_code == 200
+    assert legacy.json()["code"] == 0
+    assert legacy.json()["data"]["missing"] == 0.0
+    assert isinstance(legacy.json()["data"]["c"], float)
+    assert 0 <= legacy.json()["data"]["c"] <= 1
+    alias = client.post("/model/score", json={**body, "item_ids": ["ignored"],
+                                             "candidate_ids": ["c", "missing"]})
+    assert alias.json() == legacy.json()
+    refreshed = client.post("/model/refresh-features", json={})
+    assert refreshed.status_code == 200 and refreshed.json()["code"] == 0
+    assert client.post("/model/score", json=body).json() == legacy.json()
+    assert client.post("/model/score", json={"target_type": "invalid"}).status_code == 422
+    unloaded = client.post("/clean", json={})
+    assert unloaded.status_code == 200
+    assert unloaded.json() == {"code": 0, "status": "success", "data": None,
+                               "message": "model unloaded"}

@@ -8,6 +8,7 @@ import torch
 from algorithm.feature.feature_space import FeatureSpace
 from proto import Model, UserItems
 from algorithm.rank.training import TrainingRequest, train_release
+from helpers import active_model, install_model, set_info
 import server
 
 
@@ -69,7 +70,7 @@ def test_subset_requires_publish_and_preserves_encoding(
         input_label_count=40,
     )
     manifest = train_release(request, tmp_path / "releases")
-    assert server.model is None and server.user_model is None
+    assert active_model() is None and active_model("user") is None
     assert manifest["feature_selection"] == selection
     release = tmp_path / "releases" / target / "global" / "test-v1"
     sidecar = release / manifest["feature"]
@@ -96,7 +97,7 @@ def test_subset_requires_publish_and_preserves_encoding(
             feature=str(sidecar),
         )
     )
-    current = server.model if target == "item" else server.user_model
+    current = active_model() if target == "item" else active_model("user")
     vector = np.concatenate(
         (
             space.transform_users(pd.DataFrame([source])),
@@ -152,17 +153,19 @@ def test_publication_during_request_keeps_original_model_and_features(
         "users": {"u": np.array([1.0])},
         "items": {"i": np.array([2.0])},
     }
-    server.model = old
-    server.model_info = {"target_type": "item"}
+    install_model(old, target="item")
+    set_info({"target_type": "item"}, target="item")
 
     def publish_during_refresh(target):
-        server.model = LRModel(8)
-        server.model.feature_snapshot = {
+        install_model(LRModel(8), target="item")
+        active_model().feature_snapshot = {
             "users": {"u": np.ones(4)},
             "items": {"i": np.ones(4)},
         }
 
-    monkeypatch.setattr(server, "_schedule_feature_refresh", publish_during_refresh)
+        install_model(active_model())
+
+    monkeypatch.setattr(server.model_service, "schedule_feature_refresh", publish_during_refresh)
     result = server.score(UserItems(user_id="u", item_ids=["i"]))
     assert result["data"]["i"] == pytest.approx(
         torch.sigmoid(torch.tensor(3.0)).item()
@@ -172,14 +175,16 @@ def test_publication_during_request_keeps_original_model_and_features(
 def test_failed_refresh_retains_usable_snapshot(monkeypatch):
     from algorithm.rank.lr import LRModel
 
-    server.model = LRModel(2)
-    server.model.feature_snapshot = {
+    install_model(LRModel(2), target="item")
+    active_model().feature_snapshot = {
         "users": {"u": np.array([1.0])},
         "items": {"i": np.array([2.0])},
     }
 
+    install_model(active_model())
+
     def fail(target):
         raise ConnectionError("redis unavailable")
 
-    monkeypatch.setattr(server, "_schedule_feature_refresh", fail)
+    monkeypatch.setattr(server.model_service, "schedule_feature_refresh", fail)
     assert server.score(UserItems(user_id="u", item_ids=["i"]))["code"] == 0

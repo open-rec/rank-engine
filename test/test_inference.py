@@ -12,7 +12,11 @@ from algorithm.feature.feature_space import (
 from algorithm.rank.fm import FMModel
 from algorithm.rank.lr import LRModel
 from proto import UserItems
-from service.inference import prepare_inference
+from models.common.projection import prepare_torch
+from models.base import LoadedModel
+from backends.torch_backend import TorchBackend
+from helpers import install_model
+from helpers import runtime_for
 import server
 
 
@@ -86,11 +90,7 @@ def test_batched_and_projected_scores_preserve_feature_semantics(
     kind, target, projected, dynamic, user, session, monkeypatch
 ):
     model = serving_model(kind, dynamic)
-    if projected:
-        prepare_inference(model, model.feature_snapshot)
-    monkeypatch.setattr(server, "user_model" if target == "user" else "model", model)
-    monkeypatch.setattr(server, "user_model_info" if target == "user" else "model_info",
-                        {"type": kind, "target_type": target})
+    install_model(model, target=target, kind=kind, projected=projected)
     request = UserItems(
         user_id=user, session_id=session, target_type=target,
         candidate_ids=["missing", "a", "b", "absent", "a"],
@@ -109,49 +109,46 @@ def test_batched_and_projected_scores_preserve_feature_semantics(
 def test_refresh_atomically_replaces_projections(kind, monkeypatch):
     model = serving_model(kind)
     original = model.feature_snapshot
-    prepare_inference(model, original)
-    original_values = original["scorer"].blocks["items"][1].copy()
-    monkeypatch.setattr(server, "model", model)
-    monkeypatch.setattr(server, "model_info", {"type": kind})
+    original_runtime = install_model(model, projected=True)
+    original_values = original_runtime.executor.projected.blocks["items"][1].copy()
     request = UserItems(user_id="u", candidate_ids=["a", "b"], session_id="s")
     before = server.score(request)["data"]
     replacement = {**original, "items": {key: row + 1 for key, row in original["items"].items()}}
-    replacement.pop("scorer")
     monkeypatch.setattr(server.feature_service, "prepare_all_features", lambda path: replacement)
-    server._refresh_features("item", force=True)
-    assert model.feature_snapshot is replacement
-    assert replacement["scorer"] is not original["scorer"]
+    server.model_service.refresh_features("item", force=True)
+    replacement_runtime = server.model_service.current("item")
+    assert replacement_runtime.snapshot is replacement
+    assert replacement_runtime.executor.projected is not original_runtime.executor.projected
+    model.feature_snapshot = replacement  # Reference oracle uses the new feature rows.
     assert server.score(request)["data"] == pytest.approx(reference_scores(model, request), abs=1e-6)
     assert server.score(request)["data"] != before
-    np.testing.assert_array_equal(original["scorer"].blocks["items"][1], original_values)
+    np.testing.assert_array_equal(original_runtime.executor.projected.blocks["items"][1], original_values)
 
 
 def test_failed_projection_refresh_retains_previous_snapshot(monkeypatch):
     model = serving_model("fm")
     original = model.feature_snapshot
-    prepare_inference(model, original)
-    monkeypatch.setattr(server, "model", model)
+    original_runtime = install_model(model, projected=True)
     invalid = {**original, "items": {"a": np.zeros(3)}}
     monkeypatch.setattr(server.feature_service, "prepare_all_features", lambda path: invalid)
     with pytest.raises(ValueError, match="feature block"):
-        server._refresh_features("item", force=True)
-    assert model.feature_snapshot is original
+        server.model_service.refresh_features("item", force=True)
+    assert server.model_service.current("item") is original_runtime
 
 
 def test_refresh_during_encoding_keeps_request_projection_snapshot(monkeypatch):
     model = serving_model("fm")
     original = model.feature_snapshot
-    prepare_inference(model, original)
-    monkeypatch.setattr(server, "model", model)
+    original_runtime = install_model(model, projected=True)
     request = UserItems(user_id="u", candidate_ids=["a", "b"])
     expected = reference_scores(model, request)
     replacement = copy.deepcopy(original)
     replacement["items"]["a"] += 5
-    prepare_inference(model, replacement)
+    replacement_runtime = runtime_for(model, snapshot=replacement, projected=True)
     transform = original["space"].transform_contexts
 
     def refresh_while_encoding(frame):
-        model.feature_snapshot = replacement
+        server.model_service.runtimes["item"] = replacement_runtime
         return transform(frame)
 
     monkeypatch.setattr(original["space"], "transform_contexts", refresh_while_encoding)
@@ -164,8 +161,9 @@ def test_custom_forward_is_not_replaced_by_projection():
             return super().forward(x) * .5
 
     snapshot = serving_model("lr").feature_snapshot
-    prepare_inference(CustomLR(snapshot["dim"]), snapshot)
-    assert "scorer" not in snapshot
+    custom = CustomLR(snapshot["dim"])
+    loaded = LoadedModel(custom, TorchBackend(custom), {})
+    assert prepare_torch(loaded, snapshot, LRModel).projected is None
 
 
 @pytest.mark.parametrize("factor_dim", [0, 1, 8, 64])
@@ -190,8 +188,8 @@ def test_projection_chunk_boundaries_match_dense_model(factor_dim):
         "space": space, "dim": space.dim, "users": {"u": user},
         "items": {str(i): row for i, row in enumerate(items)}, "sessions": {"s": session},
     }
-    prepare_inference(model, snapshot)
-    actual = snapshot["scorer"].score("u", list(snapshot["items"]), "s", [contexts])
+    runtime = runtime_for(model, snapshot=snapshot, projected=True)
+    actual = runtime.executor.projected.score("u", list(snapshot["items"]), "s", [contexts])
     matrix = np.concatenate((np.broadcast_to(user, (len(items), len(user))), items,
                              np.broadcast_to(session, (len(items), len(session))), contexts), axis=1)
     with torch.no_grad():
@@ -201,8 +199,7 @@ def test_projection_chunk_boundaries_match_dense_model(factor_dim):
 
 def test_all_missing_candidates_do_not_encode_request(monkeypatch):
     model = serving_model("lr")
-    prepare_inference(model, model.feature_snapshot)
-    monkeypatch.setattr(server, "model", model)
+    install_model(model, projected=True)
     monkeypatch.setattr(model.feature_snapshot["space"], "transform_contexts",
                         lambda frame: pytest.fail("no known candidates to encode"))
     assert server.score(UserItems(candidate_ids=["missing"]))["data"] == {"missing": 0.0}

@@ -15,7 +15,7 @@ FastAPI serving for PyTorch LR/FM and LightGBM, listening on port 8123.
 ## how it fits in
 
 ```
-rec-server ──POST /model/score──> rank-engine ──> LRModel (from rec-algorithm)
+rec-server ──POST /model/score──> rank-engine ──> registered LR / FM / LightGBM predictor
                                        │
                                        └──reads user:* / item:* features──> Redis
 ```
@@ -29,7 +29,8 @@ ranking ran. Rank-engine remains a Python service; its callers and Spark jobs us
 
 ## install
 
-The model class (`LRModel`) and feature encoders come from the sibling `rec-algorithm` project.
+Training model classes (LR, FM and LightGBM) and feature encoders come from the sibling
+`rec-algorithm` project; rank-engine owns their serving adapters.
 Install it before rank-engine when running directly on the host:
 
 ```shell
@@ -270,15 +271,37 @@ profiles are normalized through rec-algorithm's shared content materializer duri
 refresh: title-like fields use the fitted sidecar's fixed-width feature hash, while content age is
 recomputed from `pubTime` at refresh time. New item IDs therefore remain scoreable from content
 without rebuilding a vocabulary.
-`model_func_map` maps a `type` string to a class from `rec-algorithm`:
+See [serving architecture and model extensions](docs/architecture.md) for lifecycle,
+interface contracts and operator optimization guidance. Serving code is organized by responsibility:
 
-```python
-model_func_map = {
-    "lr": LRModel,
-    "fm": FMModel,
-    "lightgbm": LightGBMBinaryModel,
-}
+```text
+service/       feature_service, model_service, inference_service
+models/        registry and per-model load/validation/forward implementations
+  lr/          LR definition and forward entry point
+  fm/          FM definition and forward entry point
+  lightgbm/    LightGBM definition, CPU/GPU predictor and GPU converter
+  common/      shared LR/FM static projection optimization
+backends/      reusable execution backends (currently Torch for LR/FM)
+inference/     lazy feature batches and versioned ModelRuntime
 ```
+
+`models/registry.py` declares the supported model definitions. A definition implements
+`load(info, dim, device)` and `prepare(loaded, snapshot)`. Loading returns the model,
+predictor and model-specific metadata; preparation returns an executor with `score(batch)`.
+To add a model, implement and register a definition without adding branches to the HTTP
+or service layers. Existing LR/FM definitions reuse rec-algorithm's training classes and
+checkpoint format; their `forward.py` files are the serving entry points for future
+operator optimizations. A changed forward must also validate or disable static projections.
+Reusable custom operators can be added under `operators/` when needed.
+
+ModelService publishes the model, feature snapshot and prepared executor together as a
+`ModelRuntime`. Refresh builds a replacement runtime without mutating an in-flight
+request's version. Projection caches belong to the executor, not the feature snapshot.
+InferenceService preserves candidate ordering and missing-candidate behavior; dense matrices
+are assembled lazily so projected LR/FM inference does not pay for unused dense inputs.
+LightGBM-specific inference and nvForest integration live entirely under `models/lightgbm/`.
+`backends/` is reserved for execution frameworks shared by multiple model types.
+CUDA imports remain lazy, keeping CPU installations usable.
 
 FM's `factor_dim` defaults to 8 during training and is recorded in the manifest. Loading also
 derives it from the `factors` tensor, so activation and rollback remain self-contained.
@@ -322,12 +345,15 @@ Install the sibling algorithm package and test dependencies, then run the focuse
 
 ```shell
 pip install -e ../rec-algorithm
-pip install -r requirements-test.txt
+pip install -r requirements.txt -r requirements-test.txt
 pytest -q test
 ```
 
 The tests use in-memory feature snapshots and temporary checkpoints; Redis and a running
-rank-engine service are not required.
+rank-engine service are not required. HTTP tests start a temporary local server.
+GPU tests skip when CUDA is unavailable; to run them, install `requirements-cuda.txt`
+and expose the GPU, then run the same suite. Coverage includes model registration,
+versioned runtime refresh, CPU/GPU precision and the existing HTTP contracts.
 
 
 ### Session and request features
