@@ -1,0 +1,6 @@
+ARG RANK_TEST_BASE_IMAGE=openrec/rank-engine:latest
+FROM ${RANK_TEST_BASE_IMAGE}
+
+COPY requirements-test-tools.txt /tmp/requirements-test-tools.txt
+RUN python -m pip install --no-cache-dir -r /tmp/requirements-test-tools.txt \
+    && python -m pytest --version
