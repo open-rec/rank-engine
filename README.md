@@ -212,13 +212,13 @@ easily missed. From the OpenRec workspace root, use:
 ```shell
 curl -X POST http://127.0.0.1:8123/model/load \
   -H 'Content-Type: application/json' \
-  -d '{"type": "lr", "model": "model/rank/item/lr.pth", "feature": "model/rank/item/lr.features.json"}'
+  -d '{"type": "lr", "model": "model/rank/item/lr/lr.pth", "feature": "model/rank/item/lr/lr.features.json"}'
 ```
 
 When running from the `rank-engine` directory, prefix both host paths with `../`. The cluster
 Compose does not use these relative paths: it mounts the model repository at `/bootstrap-models`
-and configures `/bootstrap-models/rank/item/lr.pth` plus the matching feature sidecar. User ranking
-uses `/bootstrap-models/rank/user/lr.pth`; requests set `target_type=user` and use `candidate_ids`.
+and configures `/bootstrap-models/rank/item/lr/lr.pth` plus the matching feature sidecar. User ranking
+uses `/bootstrap-models/rank/user/lr/lr.pth`; requests set `target_type=user` and use `candidate_ids`.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -310,7 +310,7 @@ Train a checkpoint with `rec-algorithm`, or use the generated example-fixture bo
 
 | Source | Type | Dim | Path |
 |---|---|---|---|
-| [model](https://github.com/open-rec/model) | LR | from `lr.features.json` / `lr.manifest.json` (currently 423) | `model/rank/item/lr.pth` from the workspace root |
+| [model](https://github.com/open-rec/model) | LR | from `lr.features.json` / `lr.manifest.json` (currently 423) | `model/rank/item/lr/lr.pth` from the workspace root |
 | `rec-algorithm` `test_lr.py::test_train` | LR | depends on the fitted feature space | `{model_home}/rank/default/lr.pth` |
 
 `model_home` uses `OPENREC_MODEL_HOME` first, then the sibling model repository when it has a
