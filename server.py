@@ -22,7 +22,7 @@ from service.model_service import ModelService
 from service.inference_service import InferenceService
 from util.redis_util import get_redis_client
 
-app = FastAPI(title="OpenRec Rank Engine", version="0.1.0")
+app = FastAPI(title="OpenRec Rank Engine", version="0.2.0")
 feature_service = FeatureService()
 model_service = ModelService(feature_service)
 inference_service = InferenceService(model_service, feature_service)

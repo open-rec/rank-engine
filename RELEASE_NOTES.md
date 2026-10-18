@@ -1,25 +1,21 @@
-# rank-engine v0.1.0
+# rank-engine v0.2.0
 
-Released: 2026-10-05
+Released: 2026-10-18
 
-Online model inference. First coordinated OpenRec source release.
+Part of the coordinated OpenRec v0.2.0 source release.
 
-## Features
+## Changes since v0.1.0
 
-- FastAPI scoring for source users and item or user candidates, using LR, FM and LightGBM models.
-- Shared encoders and feature contracts from rec-algorithm, Redis feature snapshots, and refreshable time-window features.
-- Versioned model loading, retained activation state, startup recovery and readiness checks.
-- Explicit feature-sidecar validation, scoring metrics and CPU/CUDA device configuration.
-- Session and request feature transport where supported by the selected model contract.
+- Separate HTTP handling, model lifecycle, feature loading and inference orchestration.
+- Add model registry, batched inference and cached CPU projections, with CPU/CUDA selection and LightGBM inference support.
+- Publish model, feature snapshot and executor together to preserve in-flight requests during replacement.
 
 ## Installation and compatibility
 
-Build with rec-algorithm `v0.1.0`. Model weights, fitted feature sidecars and selected definitions must be compatible. Default bootstrap models live under `rank/item` and `rank/user`; trained releases and activation state use separate runtime storage.
+Build with rec-algorithm v0.2.0. Keep model weights, fitted feature sidecars and selected definitions together. Bootstrap artifacts now live in rank/{item,user}/{lr,fm,lightgbm}/. Trained releases retain separate runtime storage.
 
-The service loads and scores models; offline training belongs to rec-algorithm. Standalone normally bypasses ranking. A nonempty rec-server response alone does not establish that ranking succeeded; cluster acceptance checks rank scores.
+See the [distribution upgrade and rollback instructions](https://github.com/open-rec/openrec/blob/v0.2.0/RELEASE_NOTES.md) for the complete compatible component set and persisted configuration migrations.
 
-## Validation and known boundaries
+## Validation and publication
 
-See this repository's README for build/test commands and deployment requirements. The coordinated release's [validation record](https://github.com/open-rec/openrec/blob/v0.1.0/release/VALIDATION.md) distinguishes checks executed for this release from historical integration evidence.
-
-This initial release establishes a versioned source baseline. Source archives and checksums are published; external package registries and container registries are not populated by the source-release workflow. Upgrade the complete compatible distribution, retain data/checkpoints/artifacts, and preserve prior component refs for rollback.
+The [validation record](https://github.com/open-rec/openrec/blob/v0.2.0/release/VALIDATION.md) distinguishes release checks from maintainer-reported prior CI and integration results. GitHub Actions publishes source archives and SHA-256 checksums; Maven Central, PyPI and versioned container registries are not populated by this workflow.

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-10-18
 
 - Separate HTTP handling, model lifecycle, feature loading and inference orchestration.
 - Add a model registry and LR/FM serving forward entry points while reusing rec-algorithm
@@ -14,4 +14,4 @@
 
 ## 0.1.0 — 2026-10-05
 
-First coordinated release. See [release notes](RELEASE_NOTES.md) for features, compatibility and known limitations.
+First coordinated release. See [release notes](https://github.com/open-rec/rank-engine/blob/v0.1.0/RELEASE_NOTES.md) for features, compatibility and known limitations.
