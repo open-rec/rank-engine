@@ -315,7 +315,7 @@ Train a checkpoint with `rec-algorithm`, or use the generated example-fixture bo
 
 `model_home` uses `OPENREC_MODEL_HOME` first, then the sibling model repository when it has a
 `rank/` directory, otherwise `rec-algorithm/model`. Every checkpoint must travel with its matching
-`*.features.json`; the current default bundle is generated from `example/data/test`, not Douban.
+`*.features.json`; the current default bundle is generated from `openrec/data/test`, not Douban.
 
 ## configuration
 
